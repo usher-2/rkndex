@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+
+# Script to manage storage of uncompressed dump.xml + dump.xml.sig
+# in git repo to utilize git delta-compression.
+#
+# Some metadata is also preserved as part of manifest files and git commit
+# messages to simplify grep'ing:
+# - size, mtime, MD5, SHA1, SHA256, SHA512 of dump.xml, dump.xml.sig
+# - updateTime - both as UNIX time and as raw data
+# - updateTimeUrgently - both as UNIX time and as raw data
+# - signingTime (1.2.840.113549.1.9.5) from dump.xml.sig as UNIX time and in updateTime TZ
+#
+# Metadata of _original_ ZIP file is not preserved and is lost forever.
+# Code _hopes_ that mtime of dump.xml{,.sig} is preserved by unzip.
+
+import os
+import sys
+import binascii
+import calendar
+import codecs
+import datetime
+import functools
+import hashlib
+import json
+import re
+from subprocess import run, check_call, check_output, Popen, PIPE # TODO replace check_call, check_output, with `run`
+
+import progressbar # python3-progressbar=2.3-4 from debian:buster
+
+REPO = 'rkn.git'
+NAME = 'John Doe'
+EMAIL = 'noreply@example.net'
+RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
+CAPATH = '/mnt/gost-russian-ca/certs'
+
+def git_init():
+    if not os.path.exists(REPO):
+        check_call(['git', 'init', '--bare', REPO])
+        new = True
+    else:
+        new = False
+    os.environ['GIT_DIR'] = os.path.abspath(REPO)
+    if new:
+        check_call(['git', 'config', 'user.name', NAME])
+        check_call(['git', 'config', 'user.email', EMAIL])
+        empty_tree = check_output(['git', 'hash-object', '-t', 'tree', '/dev/null']).strip()
+        commit = check_output(['git', 'commit-tree', '-m', 'Initial commit', empty_tree], env=dict(os.environ,
+            GIT_AUTHOR_DATE='1343462400 +0400',
+            GIT_COMMITTER_DATE='1343462400 +0400'
+        )).strip()
+        check_call(['git', 'update-ref', 'HEAD', commit])
+    os.environ['GIT_COMMITTER_NAME'] = NAME
+    os.environ['GIT_COMMITTER_EMAIL'] = EMAIL
+    os.environ['GIT_AUTHOR_EMAIL'] = RKN_EMAIL
+    # GIT_AUTHOR_NAME    ~ CN from dump.xml.sig
+    # GIT_AUTHOR_DATE    ~ signingTime from dump.xml.sig
+    # GIT_COMMITTER_DATE ~ signingTime
+
+SIGNING_RE = re.compile(br'object: signingTime \(1\.2\.840\.113549\.1\.9\.5\)\s+(?:value\.)?set:\s+UTCTIME:(?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(?P<day>\d+) (?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d) (?P<year>\d{4}) GMT\s', re.DOTALL)
+MONMAP = {b'Jan': 1, b'Feb': 2, b'Mar': 3, b'Apr': 4, b'May': 5, b'Jun': 6,
+          b'Jul': 7, b'Aug': 8, b'Sep': 9, b'Oct': 10, b'Nov': 11, b'Dec': 12}
+
+def cms_signing_time(cms):
+    m = SIGNING_RE.search(cms)
+    if m is None:
+        raise RuntimeError('Signature file without signingTime')
+    d = m.groupdict()
+    for k in d.keys():
+        if k == 'mon':
+            d[k] = MONMAP[d[k]] # NB, it's 1-12, not 0-11
+        else:
+            d[k] = int(d[k], 10)
+    return calendar.timegm((d['year'], d['mon'], d['day'], d['hour'], d['min'], d['sec']))
+
+SUBJECT_DN_RE = re.compile(br'^\s+subject: (?P<s_dn>.*)$', re.MULTILINE)
+CN_RE = re.compile(br'\b(?P<cn>CN=[\\x0-9A-F ]+)(?:$|,)') # ugly, but works for now
+
+def cms_subject_cn(cms):
+    # Sorry, RFC2253 and RFC4514 are mostly ignored here.
+    m = SUBJECT_DN_RE.search(cms)
+    if m is None:
+        raise RuntimeError('Signature file withoug subject DN')
+    m = CN_RE.search(m.group('s_dn'))
+    if m is None:
+        raise RuntimeError('Signature file with subject DN without CN')
+    cn = m.group('cn') # bytes
+    return codecs.escape_decode(cn)[0].decode('utf-8') # str
+
+def file_githash(fname):
+    h = hashlib.sha1()
+    h.update('blob {:d}\0'.format(os.path.getsize(fname)).encode('ascii'))
+    with open(fname, 'rb') as fd:
+        for blob in iter(functools.partial(fd.read, 65536), b''):
+            h.update(blob)
+    return h.hexdigest()
+
+def file_metadata(fname):
+    hashes = [hashlib.md5(), hashlib.sha1(), hashlib.sha256(), hashlib.sha512()]
+    with open(fname, 'rb') as fd:
+        for blob in iter(functools.partial(fd.read, 65536), b''):
+            for h in hashes:
+                h.update(blob)
+    return {
+        'name': os.path.basename(fname),
+        'size': os.path.getsize(fname),
+        'mtime': int(os.path.getmtime(fname)),
+        'MD5': hashes[0].hexdigest(),
+        'SHA1': hashes[1].hexdigest(),
+        'SHA256': hashes[2].hexdigest(),
+        'SHA512': hashes[3].hexdigest(),
+    }
+
+def git_blob_exists(githash):
+    p = run(['git', 'cat-file', '-e', githash])
+    if p.returncode == 0:
+        return True
+    elif p.returncode == 1:
+        return False
+    else:
+        raise RuntimeError('`git cat-file -e` failure', githash, p)
+
+# Non-zero minutes TZ are not tested, so `:00` match is hard-coded
+UPDATE_TIME_RE = re.compile(br'\bupdateTime="(?P<raw>(?P<year>\d{4})-(?P<mon>\d\d)-(?P<day>\d\d)T(?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d)\+(?P<tzh>\d\d):00)"')
+UPDATE_TIME_URGENTLY_RE = re.compile(br'\bupdateTimeUrgently="(?P<raw>(?P<year>\d{4})-(?P<mon>\d\d)-(?P<day>\d\d)T(?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d)\+(?P<tzh>\d\d):00)"')
+
+def update_timegm(re_match):
+    # NB regexps have + offset hardcoded
+    s = re_match.groupdict()
+    d = {k: int(s[k], 10) for k in s if k != 'raw'}
+    tz = datetime.timezone(datetime.timedelta(hours=d['tzh']))
+    dt = datetime.datetime(d['year'], d['mon'], d['day'], d['hour'], d['min'], d['sec'], tzinfo=tz)
+    return dt, re_match.group('raw').decode('ascii')
+
+def update_time(dump_xml):
+    with open(dump_xml, 'rb') as fd:
+        head = fd.read(4096)
+    m = UPDATE_TIME_RE.search(head)
+    if m is None:
+        raise RuntimeError('Dump file without updateTime', dump_xml, head)
+    ut, utraw = update_timegm(m)
+    m = UPDATE_TIME_URGENTLY_RE.search(head)
+    if m is None:
+        # That's FIXME as http://vigruzki.rkn.gov.ru/docs/description_for_operators_actual.pdf
+        # allows that field to be absent.
+        raise RuntimeError('FIXME: dump file without updateTimeUrgently', dump_xml, head)
+    utu, uturaw = update_timegm(m)
+    if ut.tzinfo != utu.tzinfo:
+        raise RuntimeError('Insanity, updateTime and updateTimeUrgently in different timezones', utraw, uturaw)
+    return ut, utraw, utu, uturaw
+
+def isoformat(unix_ts, tz):
+    return datetime.datetime.fromtimestamp(unix_ts, tz).isoformat()
+
+def commit_files(dump_xml, dump_xml_sig):
+    cms = check_output(['openssl', 'cms', '-inform', 'DER', '-in', dump_xml_sig, '-cmsout', '-print'])
+    signing_ts = cms_signing_time(cms)
+    subject_cn = cms_subject_cn(cms)
+    verify = Popen(['openssl', 'smime', '-verify', '-engine', 'gost', '-CApath', CAPATH, '-attime', str(signing_ts),
+                    '-in', dump_xml_sig, '-inform', 'DER', '-content', dump_xml, '-out', '/dev/null'], stderr=PIPE)
+    # do hashing and sig-check in parallel
+    sigmeta = file_metadata(dump_xml_sig)
+    xmlmeta = file_metadata(dump_xml)
+    ut, utraw, utu, uturaw = update_time(dump_xml)
+    # back to openssl
+    stderr = verify.stderr.read()
+    if verify.wait() != 0 or b'Verification successful\n' not in stderr:
+        # `stderr` double check is needed because...
+        ### $ openssl smime -verify -engine gost -CApath /nonexistent -in dump.xml.sig -inform DER && echo OKAY
+        ### engine "gost" set.
+        ### smime: Not a directory: /nonexistent
+        ### smime: Use -help for summary.
+        ### OKAY <--- ^!(*&^%@(^%@#&$%!!!
+        # I hope, it has no messages like "Not Quite Verification successful\n"...
+        raise RuntimeError('openssl smime -verify failure', signing_ts, stderr)
+    # git does not preserve mtime, so mtimes are saved as json manifest all the
+    # other fields are preserved, so they're only stored in commit messages.
+    mtime_json = [{k: _[k] for k in ('name', 'mtime')} for _ in (xmlmeta, sigmeta)]
+    mtime_json = json.dumps(mtime_json, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    mtime_blob = run(['git', 'hash-object', '-w', '--stdin'], input=mtime_json, stdout=PIPE, check=True).stdout.strip().decode('ascii')
+    xmlblob, sigblob = run(['git', 'hash-object', '-w', '--', dump_xml, dump_xml_sig], stdout=PIPE, check=True).stdout.strip().decode('ascii').split()
+    run(['git', 'read-tree', '--empty'], check=True)
+    run(['git', 'update-index', '--add',
+         '--cacheinfo', '100644,{:s},meta.json'.format(mtime_blob),
+         '--cacheinfo', '100644,{:s},dump.xml'.format(xmlblob),
+         '--cacheinfo', '100644,{:s},dump.xml.sig'.format(sigblob),
+    ], check=True)
+    tree = run(['git', 'write-tree'], stdout=PIPE, check=True).stdout.strip().decode('ascii')
+    # index is prepared with the proper tree, let's prepare commit
+    signing_raw = isoformat(signing_ts, ut.tzinfo)
+    body = [
+        'Updated {:s}, signed {:s}'.format(utraw, signing_raw),
+        '',
+        '{:s} {:.0f} updateTime'.format(utraw, ut.timestamp()),
+        '{:s} {:.0f} updateTimeUrgently'.format(uturaw, utu.timestamp()),
+        '{:s} {:d} signingTime'.format(signing_raw, signing_ts),
+        '{:s} {:d} dump.xml mtime'.format(isoformat(xmlmeta['mtime'], ut.tzinfo), xmlmeta['mtime']),
+        '{:s} {:d} dump.xml.sig mtime'.format(isoformat(sigmeta['mtime'], ut.tzinfo), sigmeta['mtime']),
+    ]
+    for h in ('MD5', 'SHA1', 'SHA256', 'SHA512'):
+        body.extend((
+            '{:s} {:s} dump.xml'.format(h, xmlmeta[h]),
+            '{:s} {:s} dump.xml.sig'.format(h, sigmeta[h]),
+        ))
+    body = '\n'.join(body).encode('utf-8')
+    # do the commit, `git-commit` needs working tree, so it's not used
+    head = run(['git', 'rev-parse', 'HEAD'], stdout=PIPE, check=True).stdout.strip().decode('ascii')
+    git_ts = '{:d} +{:02.0f}00'.format(signing_ts, ut.tzinfo.utcoffset(None).seconds / 3600)
+    commit = run(['git', 'commit-tree', '-p', head, tree], input=body, env=dict(os.environ,
+            GIT_AUTHOR_NAME=subject_cn.encode('utf-8'),
+            GIT_COMMITTER_DATE=git_ts,
+            GIT_AUTHOR_DATE=git_ts), stdout=PIPE, check=True).stdout.strip().decode('ascii')
+    run(['git', 'update-ref', 'HEAD', commit], check=True)
+    maybe_gc()
+
+GIT_OBJDIR_RE = re.compile(r'[0-9a-fA-F]{2}')
+
+def maybe_gc():
+    sz = 0
+    # enumerating unpacked (or loose) objects
+    objdir = os.path.join(REPO, 'objects')
+    for hh in filter(GIT_OBJDIR_RE.fullmatch, os.listdir(objdir)):
+        hhdir = os.path.join(objdir, hh)
+        for ff in os.listdir(hhdir):
+            sz += os.path.getsize(os.path.join(hhdir, ff))
+    if sz > 1024 * 1024 * 1024:
+        run(['git', 'gc'], check=True)
+
+def add_new_files(dump_xml, dump_xml_sig):
+    if git_blob_exists(file_githash(dump_xml_sig)):
+        print('already exists')
+        return
+    commit_files(dump_xml, dump_xml_sig)
+
+def git_lstree_blob(git_dir, treeish):
+    p = run(['git', '--git-dir', git_dir, 'ls-tree', '-z', treeish], stdout=PIPE, check=True).stdout.rstrip(b'\0')
+    r = {}
+    for el in p.split(b'\0'):
+        meta, fname = el.split(b'\t', 1)
+        mode, type_, sha1 = meta.split(b' ')
+        if type_ == b'blob':
+            r[fname.decode('utf-8')] = sha1.decode('utf-8')
+    return r
+
+def add_from_mkarc_gitdir(git_dir):
+    log = run(['git', '--git-dir', git_dir, 'log', '--format=%H'], stdout=PIPE, check=True
+            ).stdout.strip().decode('ascii').split()
+    todo = []
+    pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} checked, '.format(len(log)), progressbar.ETA(), progressbar.Bar()])
+    for commit in (pb(log) if log else ()):
+        tree = git_lstree_blob(git_dir, commit)
+        if 'dump.xml.sig' not in tree or 'dump.xml' not in tree or 'manifest' not in tree:
+            continue # empty commit
+        sigex = git_blob_exists(tree['dump.xml.sig'])
+        assert sigex == git_blob_exists(tree['dump.xml']) # only together...
+        if sigex:
+            continue # exists
+        todo.append(tree)
+    del log
+    pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} imported, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
+    for tree in (pb(todo) if todo else ()):
+        mtime = run(['git', '--git-dir', git_dir, 'cat-file', 'blob', tree['manifest']], check=True, stdout=PIPE).stdout.strip().decode('ascii').split('\n')
+        mtime = [_.split() for _ in mtime if _.startswith('mtime ')]
+        mtime = {_[-1]: int(_[1]) for _ in mtime}
+        for fname in ('dump.xml', 'dump.xml.sig'):
+            with open(fname, 'wb') as fd:
+                run(['git', '--git-dir', git_dir, 'cat-file', 'blob', tree[fname]], check=True, stdout=fd)
+                os.utime(fname, (mtime[fname], mtime[fname]))
+        commit_files('dump.xml', 'dump.xml.sig')
+
+def add_from_eais_schors(jsonl_files):
+    eais_sha256 = set()
+    for fname in jsonl_files:
+        with open(fname) as fd:
+            for line in fd:
+                line = json.loads(line)
+                eais_sha256.add(binascii.unhexlify(line['id']))
+    local_sha256 = set()
+    proc = Popen(['git', 'log', '--format=%B'], stdout=PIPE)
+    for line in proc.stdout:
+        if line.startswith(b'SHA256 ') and line.endswith(b' dump.xml\n'):
+            local_sha256.add(binascii.unhexlify(line.split()[1]))
+    print(len(eais_sha256), len(local_sha256), len(eais_sha256 - local_sha256))
+    import time
+    time.sleep(10)
+
+
+
+def main():
+    git_init()
+    #add_new_files('dump.xml', 'dump.xml.sig')
+    #add_from_mkarc_gitdir(sys.argv[1])
+    add_from_eais_schors(sys.argv[1:])
+
+if __name__ == '__main__':
+    main()
