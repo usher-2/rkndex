@@ -184,12 +184,10 @@ def commit_files(dump_xml, dump_xml_sig):
     xmlblob, sigblob = run(['git', 'hash-object', '-w', '--', dump_xml, dump_xml_sig], stdout=PIPE, check=True).stdout.strip().decode('ascii').split()
     run(['git', 'read-tree', '--empty'], check=True)
     signing_utc = time.gmtime(signing_ts)
-    dump_basename = '{:02d}{:x}'.format(signing_utc.tm_year - 2000, signing_utc.tm_mon) # same as GIT_COMMITTER_DATE, but int UTC!
-    assert len(dump_basename) == 3
     run(['git', 'update-index', '--add',
          '--cacheinfo', '100644,{:s},meta.json'.format(mtime_blob),
-         '--cacheinfo', '100644,{:s},{:s}.xml'.format(xmlblob, dump_basename),
-         '--cacheinfo', '100644,{:s},{:s}.xml.sig'.format(sigblob, dump_basename),
+         '--cacheinfo', '100644,{:s},dump.xml'.format(xmlblob),
+         '--cacheinfo', '100644,{:s},dump.xml.sig'.format(sigblob),
     ], check=True)
     tree = run(['git', 'write-tree'], stdout=PIPE, check=True).stdout.strip().decode('ascii')
     # index is prepared with the proper tree, let's prepare commit
