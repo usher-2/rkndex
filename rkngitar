@@ -308,7 +308,7 @@ def add_from_eais_schors():
             # 4096 entries to get ~ 1 MiB of data per round-trip
             # slightly random count to avoid possible corner-cases at boundaries
             url = 'https://eais.example.net/start?ts={:d}&c={:d}'.format(ts_start, random.randint(4032, 4160))
-            print('Get', url, '--', end='')
+            print('Get', url, '--', end=' ')
             r = sess.get(url)
             r.raise_for_status()
             r = r.json()
@@ -330,12 +330,11 @@ def add_from_eais_schors():
             os.unlink(zip_fname)
         pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} imported, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
         for el in (pb(todo) if todo else ()):
-            r = requests.get('https://eais.example.net/get/' + el['id'], stream=True)
+            r = sess.get('https://eais.example.net/get/' + el['id'], stream=True)
             r.raise_for_status()
             with open(zip_fname, 'wb') as fd:
-                shutil.copyfileobj(response.raw, out_file)
+                shutil.copyfileobj(r.raw, fd)
             with zipfile.ZipFile(zip_fname, 'r') as zfd:
-                assert zfd.getinfo(xml_fname).file_size == el['as']
                 zfd.extract(xml_fname)
                 os.utime(xml_fname, (el['m'], el['m']))
                 zfd.extract(sig_fname)
@@ -348,7 +347,7 @@ def add_from_eais_schors():
                     assert utu.timestamp() == el['utu']
                 commit_files(xml_fname, sig_fname, sanity_cb)
             for fname in (zip_fname, xml_fname, sig_fname):
-                os.path.unlink(fname)
+                os.unlink(fname)
             with open(ts_fname, 'w') as fd: # checkpoint
                 fd.write('{:d}'.format(el['ut']))
 
