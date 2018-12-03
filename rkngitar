@@ -23,6 +23,7 @@ import functools
 import hashlib
 import json
 import re
+import time
 from subprocess import run, check_call, check_output, Popen, PIPE # TODO replace check_call, check_output, with `run`
 
 import progressbar # python3-progressbar=2.3-4 from debian:buster
@@ -31,7 +32,7 @@ REPO = 'rkn.git'
 NAME = 'John Doe'
 EMAIL = 'noreply@example.net'
 RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
-CAPATH = '/mnt/gost-russian-ca/certs'
+CAPATH = 'gost-russian-ca/certs'
 
 def git_init():
     if not os.path.exists(REPO):
@@ -95,7 +96,9 @@ def file_githash(fname):
     return h.hexdigest()
 
 def file_metadata(fname):
-    hashes = [hashlib.md5(), hashlib.sha1(), hashlib.sha256(), hashlib.sha512()]
+    blob = hashlib.sha1()
+    blob.update('blob {:d}\0'.format(os.path.getsize(fname)).encode('ascii'))
+    hashes = [hashlib.md5(), hashlib.sha1(), hashlib.sha256(), hashlib.sha512(), blob]
     with open(fname, 'rb') as fd:
         for blob in iter(functools.partial(fd.read, 65536), b''):
             for h in hashes:
@@ -108,6 +111,7 @@ def file_metadata(fname):
         'SHA1': hashes[1].hexdigest(),
         'SHA256': hashes[2].hexdigest(),
         'SHA512': hashes[3].hexdigest(),
+        'GIT': hashes[4].hexdigest(),
     }
 
 def git_blob_exists(githash):
@@ -179,10 +183,13 @@ def commit_files(dump_xml, dump_xml_sig):
     mtime_blob = run(['git', 'hash-object', '-w', '--stdin'], input=mtime_json, stdout=PIPE, check=True).stdout.strip().decode('ascii')
     xmlblob, sigblob = run(['git', 'hash-object', '-w', '--', dump_xml, dump_xml_sig], stdout=PIPE, check=True).stdout.strip().decode('ascii').split()
     run(['git', 'read-tree', '--empty'], check=True)
+    signing_utc = time.gmtime(signing_ts)
+    dump_basename = '{:02d}{:x}'.format(signing_utc.tm_year - 2000, signing_utc.tm_mon) # same as GIT_COMMITTER_DATE, but int UTC!
+    assert len(dump_basename) == 3
     run(['git', 'update-index', '--add',
          '--cacheinfo', '100644,{:s},meta.json'.format(mtime_blob),
-         '--cacheinfo', '100644,{:s},dump.xml'.format(xmlblob),
-         '--cacheinfo', '100644,{:s},dump.xml.sig'.format(sigblob),
+         '--cacheinfo', '100644,{:s},{:s}.xml'.format(xmlblob, dump_basename),
+         '--cacheinfo', '100644,{:s},{:s}.xml.sig'.format(sigblob, dump_basename),
     ], check=True)
     tree = run(['git', 'write-tree'], stdout=PIPE, check=True).stdout.strip().decode('ascii')
     # index is prepared with the proper tree, let's prepare commit
@@ -196,7 +203,7 @@ def commit_files(dump_xml, dump_xml_sig):
         '{:s} {:d} dump.xml mtime'.format(isoformat(xmlmeta['mtime'], ut.tzinfo), xmlmeta['mtime']),
         '{:s} {:d} dump.xml.sig mtime'.format(isoformat(sigmeta['mtime'], ut.tzinfo), sigmeta['mtime']),
     ]
-    for h in ('MD5', 'SHA1', 'SHA256', 'SHA512'):
+    for h in ('MD5', 'SHA1', 'GIT', 'SHA256', 'SHA512'):
         body.extend((
             '{:s} {:s} dump.xml'.format(h, xmlmeta[h]),
             '{:s} {:s} dump.xml.sig'.format(h, sigmeta[h]),
@@ -288,8 +295,8 @@ def add_from_eais_schors(jsonl_files):
 def main():
     git_init()
     #add_new_files('dump.xml', 'dump.xml.sig')
-    #add_from_mkarc_gitdir(sys.argv[1])
-    add_from_eais_schors(sys.argv[1:])
+    add_from_mkarc_gitdir(sys.argv[1])
+    #add_from_eais_schors(sys.argv[1:])
 
 if __name__ == '__main__':
     main()
