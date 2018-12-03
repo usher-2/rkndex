@@ -13,8 +13,6 @@
 # Metadata of _original_ ZIP file is not preserved and is lost forever.
 # Code _hopes_ that mtime of dump.xml{,.sig} is preserved by unzip.
 
-import os
-import sys
 import binascii
 import calendar
 import codecs
@@ -22,8 +20,13 @@ import datetime
 import functools
 import hashlib
 import json
+import os
+import random
 import re
+import shutil
+import sys
 import time
+import zipfile
 from subprocess import run, check_call, check_output, Popen, PIPE # TODO replace check_call, check_output, with `run`
 
 import progressbar # python3-progressbar=2.3-4 from debian:buster
@@ -33,6 +36,8 @@ NAME = 'John Doe'
 EMAIL = 'noreply@example.net'
 RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
 CAPATH = 'gost-russian-ca/certs'
+RKN_EPOCH = 1343462400
+GC_THRESHOLD = 1024 * 1048576 # 1 GiB
 
 def git_init():
     if not os.path.exists(REPO):
@@ -46,8 +51,8 @@ def git_init():
         check_call(['git', 'config', 'user.email', EMAIL])
         empty_tree = check_output(['git', 'hash-object', '-t', 'tree', '/dev/null']).strip()
         commit = check_output(['git', 'commit-tree', '-m', 'Initial commit', empty_tree], env=dict(os.environ,
-            GIT_AUTHOR_DATE='1343462400 +0400',
-            GIT_COMMITTER_DATE='1343462400 +0400'
+            GIT_AUTHOR_DATE='{:d} +0400'.format(RKN_EPOCH),
+            GIT_COMMITTER_DATE='{:d} +0400'.format(RKN_EPOCH)
         )).strip()
         check_call(['git', 'update-ref', 'HEAD', commit])
     os.environ['GIT_COMMITTER_NAME'] = NAME
@@ -155,7 +160,7 @@ def update_time(dump_xml):
 def isoformat(unix_ts, tz):
     return datetime.datetime.fromtimestamp(unix_ts, tz).isoformat()
 
-def commit_files(dump_xml, dump_xml_sig):
+def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
     cms = check_output(['openssl', 'cms', '-inform', 'DER', '-in', dump_xml_sig, '-cmsout', '-print'])
     signing_ts = cms_signing_time(cms)
     subject_cn = cms_subject_cn(cms)
@@ -165,6 +170,8 @@ def commit_files(dump_xml, dump_xml_sig):
     sigmeta = file_metadata(dump_xml_sig)
     xmlmeta = file_metadata(dump_xml)
     ut, utraw, utu, uturaw = update_time(dump_xml)
+    if sanity_cb is not None:
+        sanity_cb(xmlmeta, sigmeta, ut, utu)
     # back to openssl
     stderr = verify.stderr.read()
     if verify.wait() != 0 or b'Verification successful\n' not in stderr:
@@ -227,7 +234,7 @@ def maybe_gc():
         hhdir = os.path.join(objdir, hh)
         for ff in os.listdir(hhdir):
             sz += os.path.getsize(os.path.join(hhdir, ff))
-    if sz > 1024 * 1024 * 1024:
+    if sz > GC_THRESHOLD:
         run(['git', 'gc'], check=True)
 
 def add_new_files(dump_xml, dump_xml_sig):
@@ -272,29 +279,84 @@ def add_from_mkarc_gitdir(git_dir):
                 os.utime(fname, (mtime[fname], mtime[fname]))
         commit_files('dump.xml', 'dump.xml.sig')
 
-def add_from_eais_schors(jsonl_files):
-    eais_sha256 = set()
-    for fname in jsonl_files:
-        with open(fname) as fd:
-            for line in fd:
-                line = json.loads(line)
-                eais_sha256.add(binascii.unhexlify(line['id']))
+def add_from_eais_schors():
+    import requests
+    import getpass
+
+    token = getpass.getpass('[eais.example.net]: ').strip()
+
     local_sha256 = set()
-    proc = Popen(['git', 'log', '--format=%B'], stdout=PIPE)
+    proc = Popen(['git', 'log', '--format=%b'], stdout=PIPE)
     for line in proc.stdout:
         if line.startswith(b'SHA256 ') and line.endswith(b' dump.xml\n'):
             local_sha256.add(binascii.unhexlify(line.split()[1]))
-    print(len(eais_sha256), len(local_sha256), len(eais_sha256 - local_sha256))
-    import time
-    time.sleep(10)
 
+    ts_fname = os.path.join(REPO, 'ts_eais.example.net')
+    ts_start = 0
+    if os.path.exists(ts_fname):
+        with open(ts_fname) as fd:
+            ts_start = int(fd.read())
 
+    with requests.Session() as sess:
+        sess.headers.update({
+            'Authorization': 'Bearer {:s}'.format(token),
+            'User-Agent': 'rkngitar/0.0; https://darkk.net.ru/',
+        })
+
+        todo = []
+        while True:
+            # 4096 entries to get ~ 1 MiB of data per round-trip
+            # slightly random count to avoid possible corner-cases at boundaries
+            url = 'https://eais.example.net/start?ts={:d}&c={:d}'.format(ts_start, random.randint(4032, 4160))
+            print('Get', url, '--', end='')
+            r = sess.get(url)
+            r.raise_for_status()
+            r = r.json()
+            before = len(todo)
+            for el in r:
+                assert ts_start < el['ut']
+                ts_start = el['ut'] # @schors claims, that `ts` is an index on `ut` field
+                if binascii.unhexlify(el['id']) in local_sha256:
+                    continue
+                todo.append({k: el[k] for k in ('id', 'as', 'm', 'ut', 'utu')})
+            print(len(r), 'dumps', len(todo) - before, 'new')
+            if len(r) == 0:
+                break
+
+        assert len({_['id'] for _ in todo}) == len(todo), 'Duplicate `id` in TODO list'
+
+        zip_fname, xml_fname, sig_fname = 'dump.zip', 'dump.xml', 'dump.xml.sig'
+        if os.path.exists(zip_fname):
+            os.unlink(zip_fname)
+        pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} imported, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
+        for el in (pb(todo) if todo else ()):
+            r = requests.get('https://eais.example.net/get/' + el['id'], stream=True)
+            r.raise_for_status()
+            with open(zip_fname, 'wb') as fd:
+                shutil.copyfileobj(response.raw, out_file)
+            with zipfile.ZipFile(zip_fname, 'r') as zfd:
+                assert zfd.getinfo(xml_fname).file_size == el['as']
+                zfd.extract(xml_fname)
+                os.utime(xml_fname, (el['m'], el['m']))
+                zfd.extract(sig_fname)
+                os.utime(sig_fname, (RKN_EPOCH, RKN_EPOCH))
+                assert not git_blob_exists(file_githash(sig_fname)), 'dump.xml.sig is archived, but dump.xml is not?!'
+                def sanity_cb(xmlmeta, sigmeta, ut, utu):
+                    assert xmlmeta['SHA256'] == el['id']
+                    assert xmlmeta['size'] == el['as']
+                    assert ut.timestamp() == el['ut']
+                    assert utu.timestamp() == el['utu']
+                commit_files(xml_fname, sig_fname, sanity_cb)
+            for fname in (zip_fname, xml_fname, sig_fname):
+                os.path.unlink(fname)
+            with open(ts_fname, 'w') as fd: # checkpoint
+                fd.write('{:d}'.format(el['ut']))
 
 def main():
     git_init()
     #add_new_files('dump.xml', 'dump.xml.sig')
-    add_from_mkarc_gitdir(sys.argv[1])
-    #add_from_eais_schors(sys.argv[1:])
+    #add_from_mkarc_gitdir(sys.argv[1])
+    add_from_eais_schors()
 
 if __name__ == '__main__':
     main()
