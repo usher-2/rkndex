@@ -247,7 +247,7 @@ def git_lstree_blob(git_dir, treeish):
     return r
 
 def add_from_mkarc_gitdir(git_dir):
-    log = run(['git', '--git-dir', git_dir, 'log', '--format=%H'], stdout=PIPE, check=True
+    log = run(['git', '--git-dir', git_dir, 'log', '--reverse', '--format=%H'], stdout=PIPE, check=True
             ).stdout.strip().decode('ascii').split()
     todo = []
     pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} checked, '.format(len(log)), progressbar.ETA(), progressbar.Bar()])
