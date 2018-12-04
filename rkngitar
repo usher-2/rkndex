@@ -281,9 +281,12 @@ def add_from_mkarc_gitdir(git_dir):
 
 def add_from_eais_schors():
     import requests
-    import getpass
 
-    token = getpass.getpass('[eais.example.net]: ').strip()
+    if sys.stdin.isatty():
+        import getpass
+        token = getpass.getpass('[eais.example.net]: ').strip()
+    else:
+        token = sys.stdin.read().strip()
 
     local_sha256 = set()
     proc = Popen(['git', 'log', '--format=%b'], stdout=PIPE)
