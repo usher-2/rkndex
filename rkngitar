@@ -37,7 +37,7 @@ EMAIL = 'noreply@example.net'
 RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
 CAPATH = 'gost-russian-ca/certs'
 RKN_EPOCH = 1343462400
-GC_THRESHOLD = 1024 * 1048576 # 1 GiB
+GC_THRESHOLD = 10 * 1024 * 1048576 # 10 GiB
 
 def git_init():
     if not os.path.exists(REPO):
@@ -235,7 +235,9 @@ def maybe_gc():
         for ff in os.listdir(hhdir):
             sz += os.path.getsize(os.path.join(hhdir, ff))
     if sz > GC_THRESHOLD:
-        run(['git', 'gc'], check=True)
+        # incremental pack, `git gc` will do full-pack probably...
+        run(['git', 'repack', '--window-memory=384m'], check=True)
+        run(['git', 'prune-packed'], check=True)
 
 def add_new_files(dump_xml, dump_xml_sig):
     if git_blob_exists(file_githash(dump_xml_sig)):
@@ -268,6 +270,7 @@ def add_from_mkarc_gitdir(git_dir):
             continue # exists
         todo.append(tree)
     del log
+    maybe_gc()
     pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} imported, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
     for tree in (pb(todo) if todo else ()):
         mtime = run(['git', '--git-dir', git_dir, 'cat-file', 'blob', tree['manifest']], check=True, stdout=PIPE).stdout.strip().decode('ascii').split('\n')
@@ -331,6 +334,7 @@ def add_from_eais_schors():
         zip_fname, xml_fname, sig_fname = 'dump.zip', 'dump.xml', 'dump.xml.sig'
         if os.path.exists(zip_fname):
             os.unlink(zip_fname)
+        maybe_gc()
         pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} imported, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
         for el in (pb(todo) if todo else ()):
             r = sess.get('https://eais.example.net/get/' + el['id'], stream=True)

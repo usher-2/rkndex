@@ -124,16 +124,48 @@ $ openssl cms -inform der -in dump.xml.sig -cmsout -print | grep -A 3 -F 'object
 
 
 ```
-time openssl smime -verify -engine gost -CApath /mnt/gost-russian-ca/certs -in dump.xml.sig -inform DER -content dump.xml -out /dev/null -attime 1541746500
+$ time openssl smime -verify -engine gost -CApath /mnt/gost-russian-ca/certs -in dump.xml.sig -inform DER -content dump.xml -out /dev/null -attime 1541746500
 engine "gost" set.
 Verification successful
 
 user    0m1.716s
 
-
-time openssl smime -verify -engine gost -CAfile /mnt/gost-russian-ca/certs/ca-certificates.pem -in dump.xml.sig -inform DER -content dump.xml -out /dev/null -attime 1541746500
+$ time openssl smime -verify -engine gost -CAfile /mnt/gost-russian-ca/certs/ca-certificates.pem -in dump.xml.sig -inform DER -content dump.xml -out /dev/null -attime 1541746500
 engine "gost" set.
 Verification successful
 
 user    0m2.316s
 ```
+
+# `git cat-file` time
+
+```
+rkn.git $ for f in $(git log | awk '/GIT .* dump.xml$/ {print $2}' | shuf -n 200); do /usr/bin/time -f %e git cat-file blob $f >/dev/null; done
+```
+
+Data is stored in git-cat-file-timing. Stats are:
+
+count   200
+avg     0.59345
+min     0.16
+5.0%    0.22
+10.0%   0.24
+25.0%   0.32
+50.0%   0.49
+75.0%   0.94
+90.0%   1.04
+95.0%   1.09
+max     1.26
+
+# RAM requirements
+
+Unbounded `git gc` on 4-core machine takes 3.5 GiB of RAM:
+> Delta compression using up to 4 threads.
+> Maximum resident set size (kbytes): 3745596
+
+`git gc --aggressive` fails on this machine with OOM after allocating ~12 GiB
+of RAM.  Number of thread does not matter.
+
+To avoid OOM on a small VM with 1 GiB of RAM incremental compression is
+implemented as `git repack --window-memory=384m && git prune-packed`.
+Otherwise `git gc` OOMs.
