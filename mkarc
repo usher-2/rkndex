@@ -56,9 +56,11 @@ for dir in "$@"; do
 
         read size _ < <(du --bytes -sc .git/objects/?? | awk '($2 == "total") {print $1}')
         if [ $size -gt $(( 1024 * 1024 * 1024 )) ]; then
-            git gc
+            git repack --window-memory=384m # memory limit comes from ~ 1GiB of RAM at host
+            git prune-packed
         fi
     done
 done
 
-git gc
+git repack --window-memory=384m # memory limit comes from ~ 1GiB of RAM at host
+git prune-packed
