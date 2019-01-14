@@ -1,0 +1,42 @@
+#!/usr/bin/python3
+
+# Script to sort a branch according to author date. Unlike git-rebase, each
+# commit tree is preserved intact, so just commit objects are reordered.
+
+import sys
+import subprocess
+from subprocess import PIPE
+
+import progressbar # python3-progressbar=2.3-4 from debian:buster
+
+def check_run(*args, **kwargs):
+    return subprocess.run(*args, check=True, **kwargs)
+
+def main():
+    out_ref = sys.argv[1]
+    log = check_run(['git', 'log', '--reverse', '--pretty=format:%at %H %P'], stdout=PIPE)
+    todo = []
+    root = None
+    for line in log.stdout.split(b'\n'):
+        time, commit, parent = line.split(b' ')
+        time = int(time)
+        if not parent:
+            assert root is None
+            root = commit
+        todo.append((time, commit, parent))
+    todo.sort() # that's stable sort as `--reverse` is stable and list.sort is stable
+    if root is None:
+        raise RuntimeError('Rootless branch')
+    prev = root
+    pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} commited, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
+    for _, commit, parent in (pb(todo) if todo else ()):
+        if parent != prev:
+            obj = check_run(['git', 'cat-file', 'commit', commit], stdout=PIPE).stdout
+            new = obj.replace(b'parent ' + parent + b'\n', b'parent ' + prev + b'\n')
+            prev = check_run(['git', 'hash-object', '-t', 'commit', '-w', '--stdin'], input=new, stdout=PIPE).stdout.strip()
+        else:
+            prev = commit
+    check_run(['git', 'update-ref', out_ref, prev])
+
+if __name__ == '__main__':
+    main()

@@ -157,6 +157,20 @@ min     0.16
 95.0%   1.09
 max     1.26
 
+Timing became significantly worse after `git gc --agressive`:
+
+count   200
+min     0.16
+avg     2.20385
+5.0%    0.34
+10.0%   0.48
+25.0%   0.87
+50.0%   1.89
+75.0%   3.48
+90.0%   4.33
+95.0%   4.75
+max     5.39
+
 # RAM requirements
 
 Unbounded `git gc` on 4-core machine takes 3.5 GiB of RAM:
@@ -165,6 +179,9 @@ Unbounded `git gc` on 4-core machine takes 3.5 GiB of RAM:
 
 `git gc --aggressive` fails on this machine with OOM after allocating ~12 GiB
 of RAM.  Number of thread does not matter.
+
+`git gc --aggressive` works with pack.threads = 3 and pack.windowMemory = 2g
+and takes ~11 GiB of RAM, but it degrades read speed.
 
 To avoid OOM on a small VM with 1 GiB of RAM incremental compression is
 implemented as `git repack --window-memory=384m && git prune-packed`.
