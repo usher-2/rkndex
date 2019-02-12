@@ -79,18 +79,23 @@ def cms_signing_time(cms):
     return calendar.timegm((d['year'], d['mon'], d['day'], d['hour'], d['min'], d['sec']))
 
 SUBJECT_DN_RE = re.compile(br'^\s+subject: (?P<s_dn>.*)$', re.MULTILINE)
-CN_RE = re.compile(br'\b(?P<cn>CN=[\\x0-9A-F ]+)(?:$|,)') # ugly, but works for now
+CN_RE = re.compile(br'\bCN=(?P<cn>.+?)(?:$|, )') # ugly, but works for now
 
 def cms_subject_cn(cms):
     # Sorry, RFC2253 and RFC4514 are mostly ignored here.
     m = SUBJECT_DN_RE.search(cms)
     if m is None:
         raise RuntimeError('Signature file withoug subject DN')
-    m = CN_RE.search(m.group('s_dn'))
+    dn = m.group('s_dn')
+    m = CN_RE.search(dn)
     if m is None:
-        raise RuntimeError('Signature file with subject DN without CN')
+        raise RuntimeError('Signature file with subject DN without CN', dn)
     cn = m.group('cn') # bytes
-    return codecs.escape_decode(cn)[0].decode('utf-8') # str
+    for enc in ('utf-8', 'utf-16-be'): # pure horor suitable only for `git log` :-(
+        val = codecs.escape_decode(cn)[0].decode(enc) # str
+        if val.isprintable():
+            return 'CN=' + val
+    raise RuntimeError('CN with strange encoding', cn)
 
 def file_githash(fname):
     h = hashlib.sha1()
