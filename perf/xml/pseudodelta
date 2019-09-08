@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+#
+# Storage of delta in delta-encoded git repo can save ~50% space.
+
+import xml.etree.cElementTree as ET
+import sys
+
+def iter_content(root, ctx):
+    for event, el in ctx:
+        if event == 'end' and el.tag == 'content':
+            # `id` records are not ordered in the XML file. E.g.  XML with
+            # updateTime="2019-09-07T12:31:00+03:00" has records in that order:
+            # <content id="1750028" includeTime="2019-09-07T09:55:49" entryType="1" blockType="domain-mask" hash="5374DEE696AB1103960381C9B90F6197" ts="2019-09-07T10:38:00+03:00">
+            # <content id="80887" includeTime="2014-06-18T10:03:49" entryType="2" blockType="domain" hash="FF3FAB0A8B6CDF5DAE25406C90EE13E4">
+            # <content id="108938" includeTime="2014-12-01T20:23:44" entryType="2" blockType="domain" hash="558ECF7C5F25D94E10B4F5766A304B5C">
+            elid = int(el.attrib['id'])
+            yield elid, ET.tostring(el, encoding='utf-8')
+            root.clear()
+
+def open_xml(fpath):
+    ctx = ET.iterparse(fpath, events=('start', 'end'))
+    _, root = next(ctx) # get the root element
+    return root, ctx
+
+def fakeroot(aroot, broot):
+    assert aroot.tag == broot.tag
+    r = ET.Element(aroot.tag)
+    for k, v in aroot.attrib.items():
+        r.attrib['a_' + k] = v
+    for k, v in broot.attrib.items():
+        r.attrib['b_' + k] = v
+    r.text = '_\|/_'
+    o, c = ET.tostring(r, encoding='utf-8').split(b'_\|/_')
+    return o, c
+
+def main():
+    a, b, c = sys.argv[1:]
+
+    aroot, actx = open_xml(a)
+    broot, bctx = open_xml(b)
+
+    fakeopen, fakeclose = fakeroot(aroot, broot)
+
+    ait = iter_content(aroot, actx)
+    bit = iter_content(broot, bctx)
+
+    aknow, bknow = {}, {}
+    with open(c, 'wb') as ofd:
+        ofd.write(b'<?xml version="1.0" encoding="utf-8"?>')
+        ofd.write(fakeopen)
+        while True:
+            aid, ablob = next(ait, (None, None))
+            bid, bblob = next(bit, (None, None))
+
+            if aid is not None:
+                aknow[aid] = ablob
+            if bid is not None:
+                bknow[bid] = bblob
+            if aid is None and bid is None:
+                break
+            for i in (aid, bid):
+                if i in aknow and i in bknow:
+                    if aknow[i] != bknow[i]:
+                        ofd.write(bknow[i])
+                    # free some mem
+                    del aknow[i], bknow[i]
+        assert len(aknow.keys() & bknow.keys()) == 0
+        for aid in sorted(aknow):
+            ofd.write('<delete id="{:d}"/>'.format(aid).encode('ascii'))
+        for bid, bblob in sorted(bknow.items()):
+            ofd.write(bblob)
+        ofd.write(fakeclose)
+
+if __name__ == '__main__':
+    main()

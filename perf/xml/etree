@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+
+import xml.etree.cElementTree as ET
+import sys
+
+ctx = ET.iterparse(sys.argv[1], events=('start', 'end'))
+_, root = next(ctx) # get the root element
+for event, el in ctx:
+    if event == 'end' and el.tag == 'content':
+        pass
+        root.clear()
