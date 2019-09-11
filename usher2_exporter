@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+
+import time
+import os
+import itertools
+
+# https://github.com/prometheus/client_python
+import prometheus_client as prom
+import requests
+import dateutil.parser
+
+def schedule_every(period):
+    while True:
+        t = time.monotonic()
+        yield
+        t = time.monotonic() - t
+        if t < period:
+            time.sleep(period - t)
+
+LAST_MODIFIED_EPOCH = 'Thu, 01 Jan 1970 00:00:00 GMT'
+
+U2_EXC = prom.Counter('usher2_exceptions', 'Count handle_slug exceptions')
+U2_REQS = prom.Counter('usher2_requests', 'HTTP status codes', ['handler', 'code'])
+U2_LATENCY = prom.Summary('usher2_request_duration_seconds', 'usher2.club latency')
+U2_LASTMOD = prom.Gauge('usher2_last_modified_time', 'Last-Modified header', ['handler'])
+U2_UPDATETIME = prom.Gauge('usher2_update_time', 'XML updateTime', ['handler'])
+
+@U2_EXC.count_exceptions()
+def handle_slug(slug, sess, timeout, etag, lastmod):
+    with U2_LATENCY.time():
+        r = sess.get('https://usher2.club/{}.json'.format(slug), timeout=timeout, headers={
+            'If-None-Match': etag,
+            'If-Modified-Since': lastmod,
+        })
+    for lo, hi, code in ((200, 300, '2xx'), (300, 400, '3xx'), (400, 500, '4xx'), (500, 1000, '5xx')):
+        val = 1 if lo <= r.status_code < hi else 0
+        U2_REQS.labels(slug, code).inc(val)
+    h_etag, h_lastmod = None, None
+    if r.status_code == requests.codes.ok:
+        if 'etag' in r.headers:
+            h_etag = r.headers['etag']
+        if 'last-modified' in r.headers:
+            last_modified = h_lastmod = r.headers['last-modified']
+        else:
+            last_modified = LAST_MODIFIED_EPOCH
+        # NB: dateutil.parser is more relaxed parser than RFC1123 / RFC2616
+        last_modified = dateutil.parser.parse(last_modified).timestamp()
+        U2_LASTMOD.labels(slug).set(last_modified)
+        # `update_time` name mimics updateTime attr from XML file
+        update_time = max((el['x'] for el in r.json()), default=0)
+        U2_UPDATETIME.labels(slug).set(update_time)
+    return h_etag, h_lastmod
+
+def main():
+    prom.start_http_server(25761, '127.0.0.1')
+    with requests.Session() as sess: # for Keep-Alive
+        sess.headers.update({
+            'User-Agent': 'usher2_exporter/0.0; https://darkk.net.ru/',
+        })
+        known_slugs = ('d1_ipblock', 'd15_ipblock', 'd1_uniq_ip4')
+
+        etag = {s: '"{}"'.format(os.urandom(16).hex()) for s in known_slugs}
+        lastmod = {s: LAST_MODIFIED_EPOCH for s in known_slugs}
+
+        slug_cycle = itertools.cycle(known_slugs)
+        for _ in schedule_every(30 / len(known_slugs)):
+            slug = next(slug_cycle)
+            try:
+                h_etag, h_lastmod = handle_slug(slug, sess, 4.5, etag[slug], lastmod[slug])
+                if h_etag:
+                    etag[slug] = h_etag
+                if h_lastmod:
+                    lastmod[slug] = h_lastmod
+            except Exception:
+                pass
+
+if __name__ == '__main__':
+    main()
