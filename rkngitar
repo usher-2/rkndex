@@ -192,7 +192,7 @@ def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
         ### smime: Use -help for summary.
         ### OKAY <--- ^!(*&^%@(^%@#&$%!!!
         # I hope, it has no messages like "Not Quite Verification successful\n"...
-        raise RuntimeError('openssl smime -verify failure', signing_ts, stderr)
+        raise RuntimeError('openssl smime -verify failure', signing_ts, stderr) # libengine-gost-openssl1.1 missing?
     # git does not preserve mtime, so mtimes are saved as json manifest all the
     # other fields are preserved, so they're only stored in commit messages.
     mtime_json = [{k: _[k] for k in ('name', 'mtime')} for _ in (xmlmeta, sigmeta)]
