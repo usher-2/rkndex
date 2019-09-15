@@ -249,49 +249,6 @@ def maybe_gc():
         run(['git', 'repack', '--window-memory=384m'], check=True)
         run(['git', 'prune-packed'], check=True)
 
-def add_new_files(dump_xml, dump_xml_sig):
-    if git_blob_exists(file_githash(dump_xml_sig)):
-        print('already exists')
-        return
-    commit_files(dump_xml, dump_xml_sig)
-
-def git_lstree_blob(git_dir, treeish):
-    p = run(['git', '--git-dir', git_dir, 'ls-tree', '-z', treeish], stdout=PIPE, check=True).stdout.rstrip(b'\0')
-    r = {}
-    for el in p.split(b'\0'):
-        meta, fname = el.split(b'\t', 1)
-        mode, type_, sha1 = meta.split(b' ')
-        if type_ == b'blob':
-            r[fname.decode('utf-8')] = sha1.decode('utf-8')
-    return r
-
-def add_from_mkarc_gitdir(git_dir):
-    log = run(['git', '--git-dir', git_dir, 'log', '--reverse', '--format=%H'], stdout=PIPE, check=True
-            ).stdout.strip().decode('ascii').split()
-    todo = []
-    pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} checked, '.format(len(log)), progressbar.ETA(), progressbar.Bar()])
-    for commit in (pb(log) if log else ()):
-        tree = git_lstree_blob(git_dir, commit)
-        if 'dump.xml.sig' not in tree or 'dump.xml' not in tree or 'manifest' not in tree:
-            continue # empty commit
-        sigex = git_blob_exists(tree['dump.xml.sig'])
-        assert sigex == git_blob_exists(tree['dump.xml']) # only together...
-        if sigex:
-            continue # exists
-        todo.append(tree)
-    del log
-    maybe_gc()
-    pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} imported, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
-    for tree in (pb(todo) if todo else ()):
-        mtime = run(['git', '--git-dir', git_dir, 'cat-file', 'blob', tree['manifest']], check=True, stdout=PIPE).stdout.strip().decode('ascii').split('\n')
-        mtime = [_.split() for _ in mtime if _.startswith('mtime ')]
-        mtime = {_[-1]: int(_[1]) for _ in mtime}
-        for fname in ('dump.xml', 'dump.xml.sig'):
-            with open(fname, 'wb') as fd:
-                run(['git', '--git-dir', git_dir, 'cat-file', 'blob', tree[fname]], check=True, stdout=fd)
-                os.utime(fname, (mtime[fname], mtime[fname]))
-        commit_files('dump.xml', 'dump.xml.sig')
-
 def add_from_eais_schors():
     import requests
 
@@ -370,8 +327,6 @@ def add_from_eais_schors():
 
 def main():
     git_init()
-    #add_new_files('dump.xml', 'dump.xml.sig')
-    #add_from_mkarc_gitdir(sys.argv[1])
     add_from_eais_schors()
 
 if __name__ == '__main__':
