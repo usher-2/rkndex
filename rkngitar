@@ -13,6 +13,7 @@
 # Metadata of _original_ ZIP file is not preserved and is lost forever.
 # Code _hopes_ that mtime of dump.xml{,.sig} is preserved by unzip.
 
+import argparse
 import binascii
 import calendar
 import codecs
@@ -25,27 +26,52 @@ import random
 import re
 import shutil
 import sys
+import tempfile
 import time
+import traceback
 import zipfile
+from contextlib import contextmanager
+from operator import itemgetter
 from subprocess import run, check_call, check_output, Popen, PIPE # TODO replace check_call, check_output, with `run`
+from tempfile import NamedTemporaryFile
 
-import progressbar # python3-progressbar=2.3-4 from debian:buster
+import requests
+import prometheus_client as prom # https://github.com/prometheus/client_python
 
-REPO = 'rkn.git'
+GITAR_LATENCY = prom.Summary('gitar_duration_seconds', 'Step latency', ['step'])
+GITAR_EXCEPTIONS = prom.Counter('gitar_exceptions', 'Step exceptions', ['step'])
+HEAP_BYTES = prom.Gauge('gitar_heap_bytes', 'Non-packed .git/objects/?? size')
+
+OPT = None # CLI options
+
 NAME = 'John Doe'
 EMAIL = 'noreply@example.net'
 RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
-CAPATH = 'gost-russian-ca/certs'
 RKN_EPOCH = 1343462400
-GC_THRESHOLD = 10 * 1024 * 1048576 # 10 GiB
+
+@contextmanager
+def ScopedTmpdir(*args, **kwargs):
+    tmpdir = tempfile.mkdtemp(*args, **kwargs)
+    try:
+        yield tmpdir
+    finally:
+        shutil.rmtree(tmpdir)
+
+# Decorator is not used as @H.labels('foo').time() bar is SyntaxError, see following:
+# - https://github.com/prometheus/client_python/issues/157
+# - https://mail.python.org/pipermail/python-dev/2004-August/046711.html
+@contextmanager
+def counted_step(step):
+    with GITAR_LATENCY.labels(step).time(), GITAR_EXCEPTIONS.labels(step).count_exceptions():
+        yield
 
 def git_init():
-    if not os.path.exists(REPO):
-        check_call(['git', 'init', '--bare', REPO])
+    if not os.path.exists(OPT.git_dir):
+        check_call(['git', 'init', '--bare', OPT.git_dir])
         new = True
     else:
         new = False
-    os.environ['GIT_DIR'] = os.path.abspath(REPO)
+    os.environ['GIT_DIR'] = os.path.abspath(OPT.git_dir)
     if new:
         check_call(['git', 'config', 'user.name', NAME])
         check_call(['git', 'config', 'user.email', EMAIL])
@@ -174,7 +200,7 @@ def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
     cms = check_output(['openssl', 'cms', '-inform', 'DER', '-in', dump_xml_sig, '-cmsout', '-print'])
     signing_ts = cms_signing_time(cms)
     subject_cn = cms_subject_cn(cms)
-    verify = Popen(['openssl', 'smime', '-verify', '-engine', 'gost', '-CApath', CAPATH, '-attime', str(signing_ts),
+    verify = Popen(['openssl', 'smime', '-verify', '-engine', 'gost', '-CApath', OPT.capath, '-attime', str(signing_ts),
                     '-in', dump_xml_sig, '-inform', 'DER', '-content', dump_xml, '-out', '/dev/null'], stderr=PIPE)
     # do hashing and sig-check in parallel
     sigmeta = file_metadata(dump_xml_sig)
@@ -232,102 +258,132 @@ def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
             GIT_COMMITTER_DATE=git_ts,
             GIT_AUTHOR_DATE=git_ts), stdout=PIPE, check=True).stdout.strip().decode('ascii')
     run(['git', 'update-ref', 'HEAD', commit], check=True)
-    maybe_gc()
 
 GIT_OBJDIR_RE = re.compile(r'[0-9a-fA-F]{2}')
 
-def maybe_gc():
+def objects_heap_size():
     sz = 0
     # enumerating unpacked (or loose) objects
-    objdir = os.path.join(REPO, 'objects')
+    objdir = os.path.join(OPT.git_dir, 'objects')
     for hh in filter(GIT_OBJDIR_RE.fullmatch, os.listdir(objdir)):
         hhdir = os.path.join(objdir, hh)
         for ff in os.listdir(hhdir):
             sz += os.path.getsize(os.path.join(hhdir, ff))
-    if sz > GC_THRESHOLD:
-        # incremental pack, `git gc` will do full-pack probably...
-        run(['git', 'repack', '--window-memory=384m'], check=True)
-        run(['git', 'prune-packed'], check=True)
+    return sz
 
-def add_from_eais_schors():
-    import requests
+def objects_repack():
+    # incremental pack, `git gc` will do full-pack probably...
+    run(['git', 'repack', '--window-memory={}'.format(OPT.window_memory)], check=True)
+    run(['git', 'prune-packed'], check=True)
 
-    if sys.stdin.isatty():
-        import getpass
-        token = getpass.getpass('[eais.example.net]: ').strip()
-    else:
-        token = sys.stdin.read().strip()
-
+def load_known_dump_xml():
     local_sha256 = set()
+    max_update_time = 0
     proc = Popen(['git', 'log', '--format=%b'], stdout=PIPE)
     for line in proc.stdout:
         if line.startswith(b'SHA256 ') and line.endswith(b' dump.xml\n'):
             local_sha256.add(binascii.unhexlify(line.split()[1]))
+        elif line.endswith(b' updateTime\n'):
+            max_update_time = max(max_update_time, int(line.split()[-2]))
+    return max_update_time, local_sha256
 
-    ts_fname = os.path.join(REPO, 'ts_eais.example.net')
-    ts_start = 0
-    if os.path.exists(ts_fname):
-        with open(ts_fname) as fd:
-            ts_start = int(fd.read())
+def get_some_eais_dumps(sess, ts_start, local_sha256):
+    todo = []
+    # 4096 entries to get ~ 1 MiB of metadata per round-trip
+    r = sess.get('https://{}/start?ts={:d}&c=4096'.format(OPT.eais_fqdn, ts_start))
+    r.raise_for_status()
+    for el in r.json():
+        # `ts=` arg should be an index on `ut` field of response
+        if binascii.unhexlify(el['id']) not in local_sha256:
+            todo.append({k: el[k] for k in ('id', 'as', 'm', 'ut', 'utu')}) # see README.md for keys
+    assert len({_['id'] for _ in todo}) == len(todo), 'Duplicate `id` in TODO list'
+    return todo
 
+def get_dump_zip(sess, zipfd, fileid):
+    r = sess.get('https://{}/get/{}'.format(OPT.eais_fqdn, fileid), stream=True)
+    r.raise_for_status()
+    shutil.copyfileobj(r.raw, zipfd)
+    zipfd.flush()
+
+def zip_extract(zfd, tmpdir, fname, mtime):
+    zfd.extract(fname, path=tmpdir)
+    fpath = os.path.join(tmpdir, fname)
+    os.utime(fpath, (mtime, mtime))
+    return fpath
+
+def commit_dump_zip(zipfd, xml_sha256, xml_size, xml_mtime, update_time, update_time_urgently):
+    with zipfile.ZipFile(zipfd, 'r') as zfd, ScopedTmpdir() as tmpdir:
+        xml = zip_extract(zfd, tmpdir, 'dump.xml', xml_mtime)
+        sig = zip_extract(zfd, tmpdir, 'dump.xml.sig', RKN_EPOCH)
+        assert not git_blob_exists(file_githash(sig)), 'dump.xml.sig is archived, but dump.xml is not'
+        def sanity_cb(xmlmeta, sigmeta, ut, utu):
+            assert xmlmeta['SHA256'] == xml_sha256
+            assert xmlmeta['size'] == xml_size
+            assert ut.timestamp() == update_time
+            assert utu.timestamp() == update_time_urgently
+        commit_files(xml, sig, sanity_cb)
+
+def eais_loop():
+    with open(OPT.eais_token) as fd:
+        token = fd.read().strip()
+    ts_start, local_sha256 = load_known_dump_xml()
     with requests.Session() as sess:
         sess.headers.update({
             'Authorization': 'Bearer {:s}'.format(token),
             'User-Agent': 'rkngitar/0.0; https://darkk.net.ru/',
         })
-
-        todo = []
         while True:
-            # 4096 entries to get ~ 1 MiB of data per round-trip
-            # slightly random count to avoid possible corner-cases at boundaries
-            url = 'https://eais.example.net/start?ts={:d}&c={:d}'.format(ts_start, random.randint(4032, 4160))
-            print('Get', url, '--', end=' ')
-            r = sess.get(url)
-            r.raise_for_status()
-            r = r.json()
-            before = len(todo)
-            for el in r:
-                assert ts_start < el['ut']
-                ts_start = el['ut'] # @schors claims, that `ts` is an index on `ut` field
-                if binascii.unhexlify(el['id']) in local_sha256:
-                    continue
-                todo.append({k: el[k] for k in ('id', 'as', 'm', 'ut', 'utu')})
-            print(len(r), 'dumps', len(todo) - before, 'new')
-            if len(r) == 0:
-                break
+            try:
+                with counted_step('todo'):
+                    todo = get_some_eais_dumps(sess, ts_start, local_sha256)
+                todo.sort(key=itemgetter('ut')) # it _should_ be already sorted, but may be not
+                for el in todo:
+                    assert ts_start < el['ut'], (ts_start, el['ut'])
+                    with NamedTemporaryFile(prefix='tmpzip') as zipfd:
+                        with counted_step('fetch'):
+                            get_dump_zip(sess, zipfd, el['id'])
+                        with counted_step('store'):
+                            commit_dump_zip(zipfd, el['id'], el['as'], el['m'], el['ut'], el['utu'])
+                    ts_start = max(el['ut'], ts_start)
+                    local_sha256.add(binascii.unhexlify(el['id']))
+                    with counted_step('du'):
+                        sz = objects_heap_size()
+                    HEAP_BYTES.set(sz)
+                    if OPT.objects_xmx < sz:
+                        with counted_step('repack'):
+                            objects_repack()
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
+            time.sleep(60)
 
-        assert len({_['id'] for _ in todo}) == len(todo), 'Duplicate `id` in TODO list'
+def git_size(s):
+    suffix = {
+        'k': 1024,
+        'm': 1024 * 1024,
+        'g': 1024 * 1024 * 1024,
+    }
+    return int(s[:-1]) * suffix[s[-1]] if s.endswith(tuple(suffix.keys())) else int(s)
 
-        zip_fname, xml_fname, sig_fname = 'dump.zip', 'dump.xml', 'dump.xml.sig'
-        if os.path.exists(zip_fname):
-            os.unlink(zip_fname)
-        maybe_gc()
-        pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} imported, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
-        for el in (pb(todo) if todo else ()):
-            r = sess.get('https://eais.example.net/get/' + el['id'], stream=True)
-            r.raise_for_status()
-            with open(zip_fname, 'wb') as fd:
-                shutil.copyfileobj(r.raw, fd)
-            with zipfile.ZipFile(zip_fname, 'r') as zfd:
-                zfd.extract(xml_fname)
-                os.utime(xml_fname, (el['m'], el['m']))
-                zfd.extract(sig_fname)
-                os.utime(sig_fname, (RKN_EPOCH, RKN_EPOCH))
-                assert not git_blob_exists(file_githash(sig_fname)), 'dump.xml.sig is archived, but dump.xml is not?!'
-                def sanity_cb(xmlmeta, sigmeta, ut, utu):
-                    assert xmlmeta['SHA256'] == el['id']
-                    assert xmlmeta['size'] == el['as']
-                    assert ut.timestamp() == el['ut']
-                    assert utu.timestamp() == el['utu']
-                commit_files(xml_fname, sig_fname, sanity_cb)
-            for fname in (zip_fname, xml_fname, sig_fname):
-                os.unlink(fname)
-            with open(ts_fname, 'w') as fd: # checkpoint
-                fd.write('{:d}'.format(el['ut']))
+def parse_args():
+    p = argparse.ArgumentParser(description='Importer from EAIS to local git archive')
+    p.add_argument('--git-dir', help='Git repo directory', metavar='DIR', required=True)
+    p.add_argument('--objects-xmx', help='Git/objects max size to start repack', metavar='SIZE', type=git_size, default='5g')
+    p.add_argument('--window-memory', help='Window size for git delta compression', metavar='SIZE', type=git_size, default='384m')
+    p.add_argument('--eais-fqdn', help='EAIS service FQDN', metavar='FQDN', required=True)
+    p.add_argument('--eais-token', help='EAIS token file', metavar='FILE', required=True)
+    p.add_argument('--capath', help='CA path with GOST certs', metavar='DIR', required=True)
+    p.add_argument('--prom-addr', help='Prometheus exporter bind IP', metavar='IP', default='127.0.0.1')
+    p.add_argument('--prom-port', help='Prometheus exporter bind port', metavar='PORT', type=int, required=True)
+    return p.parse_args()
 
 def main():
+    global OPT
+    OPT = parse_args()
+    with counted_step('du'):
+        HEAP_BYTES.set(objects_heap_size())
+    prom.start_http_server(OPT.prom_port, OPT.prom_addr)
     git_init()
-    add_from_eais_schors()
+    eais_loop()
 
 if __name__ == '__main__':
     main()
