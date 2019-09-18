@@ -41,6 +41,9 @@ import prometheus_client as prom # https://github.com/prometheus/client_python
 GITAR_LATENCY = prom.Summary('gitar_duration_seconds', 'Step latency', ['step'])
 GITAR_EXCEPTIONS = prom.Counter('gitar_exceptions', 'Step exceptions', ['step'])
 HEAP_BYTES = prom.Gauge('gitar_heap_bytes', 'Non-packed .git/objects/?? size')
+for step in ('todo', 'fetch', 'store', 'du', 'repack'):
+    GITAR_LATENCY.labels(step)
+    GITAR_EXCEPTIONS.labels(step)
 
 OPT = None # CLI options
 
