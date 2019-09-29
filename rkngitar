@@ -7,7 +7,7 @@
 # messages to simplify grep'ing:
 # - size, mtime, MD5, SHA1, SHA256, SHA512 of dump.xml, dump.xml.sig
 # - updateTime - both as UNIX time and as raw data
-# - updateTimeUrgently - both as UNIX time and as raw data
+# - updateTimeUrgently - both as UNIX time and as raw data, TZ must match updateTime TZ
 # - signingTime (1.2.840.113549.1.9.5) from dump.xml.sig as UNIX time and in updateTime TZ
 #
 # Metadata of _original_ ZIP file is not preserved and is lost forever.
