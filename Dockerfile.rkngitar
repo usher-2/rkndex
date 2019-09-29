@@ -34,4 +34,4 @@ RUN set -ex \
     && :
 
 COPY rkngitar /opt/rkngitar
-ENTRYPOINT /opt/rkngitar
+ENTRYPOINT ["/opt/rkngitar"]
