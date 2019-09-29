@@ -288,6 +288,8 @@ def load_known_dump_xml():
             local_sha256.add(binascii.unhexlify(line.split()[1]))
         elif line.endswith(b' updateTime\n'):
             max_update_time = max(max_update_time, int(line.split()[-2]))
+    if proc.wait() != 0:
+        raise RuntimeError('git log failure', proc.returncode)
     return max_update_time, local_sha256
 
 def get_some_eais_dumps(sess, ts_start, local_sha256):
