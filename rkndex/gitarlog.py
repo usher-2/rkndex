@@ -94,7 +94,7 @@ class GitarLog(object):
     def insert_up_to(self, db_head, uptohead):
         cmd = ['git', '--git-dir', self.git_dir, 'log', '--format=tformat:%b%n. . .']
         if db_head is not None:
-            cmd.append(binascii.hexlify(db_head) + '..' + binascii.hexlify(uptohead))
+            cmd.append(binascii.hexlify(db_head) + b'..' + binascii.hexlify(uptohead))
         else:
             cmd.append(binascii.hexlify(uptohead))
         times_map = {
