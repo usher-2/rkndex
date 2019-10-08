@@ -295,8 +295,11 @@ def load_known_dump_xml():
 
 def get_some_eais_dumps(sess, ts_start, local_sha256):
     todo = []
-    # 4096 entries to get ~ 1 MiB of metadata per round-trip
-    r = sess.get('https://{}/start?ts={:d}&c=4096'.format(OPT.eais_fqdn, ts_start))
+    # 4096 entries to get ~ 1 MiB of metadata per round-trip.  Number of
+    # entries is randomized to avoid UNLIKELY case when two dumps have the same
+    # timestamp and the timestamp falls at the boundary of the "page".
+    page_size = random.randint(4096 - 64, 4096 + 64)
+    r = sess.get('https://{}/start?ts={:d}&c={:d}'.format(OPT.eais_fqdn, ts_start, page_size))
     r.raise_for_status()
     for el in r.json():
         # `ts=` arg should be an index on `ut` field of response
