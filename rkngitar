@@ -40,6 +40,7 @@ import prometheus_client as prom # https://github.com/prometheus/client_python
 
 GITAR_LATENCY = prom.Summary('gitar_duration_seconds', 'Step latency', ['step'])
 GITAR_EXCEPTIONS = prom.Counter('gitar_exceptions', 'Step exceptions', ['step'])
+GITAR_UPDATETIME = prom.Gauge('gitar_update_time', 'XML updateTime')
 HEAP_BYTES = prom.Gauge('gitar_heap_bytes', 'Non-packed .git/objects/?? size')
 for step in ('todo', 'fetch', 'store', 'du', 'repack'):
     GITAR_LATENCY.labels(step)
@@ -328,10 +329,9 @@ def commit_dump_zip(zipfd, xml_sha256, xml_size, xml_mtime, update_time, update_
             assert utu.timestamp() == update_time_urgently
         commit_files(xml, sig, sanity_cb)
 
-def eais_loop():
+def eais_loop(ts_start, local_sha256):
     with open(OPT.eais_token) as fd:
         token = fd.read().strip()
-    ts_start, local_sha256 = load_known_dump_xml()
     with requests.Session() as sess:
         sess.headers.update({
             'Authorization': 'Bearer {:s}'.format(token),
@@ -351,6 +351,7 @@ def eais_loop():
                             commit_dump_zip(zipfd, el['id'], el['as'], el['m'], el['ut'], el['utu'])
                     ts_start = max(el['ut'], ts_start)
                     local_sha256.add(binascii.unhexlify(el['id']))
+                    GITAR_UPDATETIME.set(ts_start)
                     with counted_step('du'):
                         sz = objects_heap_size()
                     HEAP_BYTES.set(sz)
@@ -384,11 +385,13 @@ def parse_args():
 def main():
     global OPT
     OPT = parse_args()
+    git_init()
+    ts_start, local_sha256 = load_known_dump_xml()
     with counted_step('du'):
         HEAP_BYTES.set(objects_heap_size())
+    GITAR_UPDATETIME.set(ts_start)
     prom.start_http_server(OPT.prom_port, OPT.prom_addr)
-    git_init()
-    eais_loop()
+    eais_loop(ts_start, local_sha256)
 
 if __name__ == '__main__':
     main()
