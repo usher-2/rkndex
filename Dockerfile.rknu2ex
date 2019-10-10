@@ -1,0 +1,19 @@
+# tar cz Dockerfile.rknu2ex usher2_exporter | docker build -t darkk/rkn:u2ex -f Dockerfile.rknu2ex -
+# ^^ to avoid adding huge $PWD to context
+
+FROM ubuntu:18.04
+
+RUN set -ex \
+    && sed -i s,http://archive.ubuntu.com/ubuntu/,mirror://mirrors.ubuntu.com/mirrors.txt, /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get -y --no-install-recommends install \
+        python3-dateutil \
+        python3-pip python3-setuptools python3-wheel \
+        python3-requests \
+    && pip3 install \
+        prometheus_client \
+    && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/* /var/tmp/* \
+    && :
+
+COPY usher2_exporter /opt/usher2_exporter
+ENTRYPOINT ["/opt/usher2_exporter"]

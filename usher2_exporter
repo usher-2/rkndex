@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
+#
+# Monitoring vitals of https://usher2.club charts.
 
-import time
-import os
+import argparse
 import itertools
+import os
+import time
 
-# https://github.com/prometheus/client_python
-import prometheus_client as prom
-import requests
 import dateutil.parser
+import prometheus_client as prom # https://github.com/prometheus/client_python
+import requests
 
 def schedule_every(period):
     while True:
@@ -51,8 +53,16 @@ def handle_slug(slug, sess, timeout, etag, lastmod):
         U2_UPDATETIME.labels(slug).set(update_time)
     return h_etag, h_lastmod
 
+def parse_args():
+    p = argparse.ArgumentParser(description='usher2.club/*.json vitals prometheus exporter')
+    p.add_argument('--prom-addr', help='Prometheus exporter bind IP', metavar='IP', default='127.0.0.1')
+    p.add_argument('--prom-port', help='Prometheus exporter bind port', metavar='PORT', type=int, required=True)
+    p.add_argument('--scrape-interval', help='Scrape interval for every file', metavar='SECONDS', type=float, default=30.)
+    return p.parse_args()
+
 def main():
-    prom.start_http_server(25761, '127.0.0.1')
+    opt = parse_args()
+    prom.start_http_server(opt.prom_port, opt.prom_addr)
     with requests.Session() as sess: # for Keep-Alive
         sess.headers.update({
             'User-Agent': 'usher2_exporter/0.0; https://darkk.net.ru/',
@@ -62,11 +72,13 @@ def main():
         etag = {s: '"{}"'.format(os.urandom(16).hex()) for s in known_slugs}
         lastmod = {s: LAST_MODIFIED_EPOCH for s in known_slugs}
 
+        inter_req_delay = opt.scrape_interval / len(known_slugs)
+        req_timeout = max(inter_req_delay, 2.0)
         slug_cycle = itertools.cycle(known_slugs)
-        for _ in schedule_every(30 / len(known_slugs)):
+        for _ in schedule_every(inter_req_delay):
             slug = next(slug_cycle)
             try:
-                h_etag, h_lastmod = handle_slug(slug, sess, 4.5, etag[slug], lastmod[slug])
+                h_etag, h_lastmod = handle_slug(slug, sess, req_timeout, etag[slug], lastmod[slug])
                 if h_etag:
                     etag[slug] = h_etag
                 if h_lastmod:
