@@ -1,6 +1,3 @@
-# tar cz Dockerfile.rkngitar rkngitar | docker build -t darkk/rkn:gitar -f Dockerfile.rkngitar -
-# ^^ to avoid adding huge $PWD to context
-
 # Both debian:buster-slim and ubuntu:18.04 work
 FROM ubuntu:18.04
 

@@ -10,6 +10,10 @@ from subprocess import Popen, run, PIPE
 RKN_EPOCH = 1343462400 # Sat Jul 28 12:00:00 MSK 2012
 
 class GitarLog(object):
+    public_columns = frozenset(('update_time', 'update_time_urgently', 'signing_time',
+        'xml_mtime', 'sig_mtime', 'xml_md5', 'sig_md5', 'xml_sha1', 'sig_sha1',
+        'xml_sha256', 'sig_sha256', 'xml_sha512', 'sig_sha512'))
+
     def __init__(self, git_dir, sqlite_fname='', sqlite_timeout=60):
         self.git_dir = git_dir
         self.db = sqlite3.connect(sqlite_fname, timeout=sqlite_timeout, isolation_level=None)
@@ -32,12 +36,18 @@ class GitarLog(object):
         row = next(it, None)
         return row[0] if row is not None else None
 
-    def dumps_since(self, since, count):
+    def dumps_since(self, since, count, columns=None):
+        if columns is None:
+            columns = self.public_columns
+        extra = columns - self.public_columns
+        needed = columns & self.public_columns
+        if extra or not needed:
+            raise ValueError('Bad columns set', extra, needed)
         with self.db:
-            it = self.db.execute('''SELECT * FROM log
+            it = self.db.execute('''SELECT {:s} FROM log
                 WHERE update_time >= ?
                 ORDER BY update_time, xml_sha1, sig_sha1
-                LIMIT ?''',
+                LIMIT ?'''.format(', '.join(sorted(needed))),
                 (since, count))
             return [{col[0]: row[idx] for idx, col in enumerate(it.description)} for row in it]
 

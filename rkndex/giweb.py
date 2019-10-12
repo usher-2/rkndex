@@ -27,10 +27,21 @@ class Sha1Converter(werkzeug.routing.BaseConverter):
     def to_url(self, value):
         return binascii.hexlify(value)
 
+class GitarLogColumns(werkzeug.routing.BaseConverter):
+    # Unreserved characters besides alnum are [-._~] per
+    # https://tools.ietf.org/html/rfc3986#section-2.3
+    __colname = '|'.join(sorted(GitarLog.public_columns))
+    regex = '(?:(?:{})~)*(?:{})'.format(__colname, __colname)
+    def to_python(self, value):
+        return frozenset(value.split('~'))
+    def to_url(self, value):
+        return '~'.join(sorted(value))
+
 app.url_map.converters['sha1'] = Sha1Converter
+app.url_map.converters['log_columns'] = GitarLogColumns
 
 app.config.update({ # defaults
-    'GITAR_DIR': None,
+    'GITAR_DIR': os.environ.get('RKNDEX_GIWEB_GITAR_DIR'),
     'GITARLOG_DB': '/tmp/gitar.db',
     # http://www.grantjenks.com/docs/diskcache/api.html#constants
     # https://www.sqlite.org/intern-v-extern-blob.html
@@ -91,6 +102,8 @@ def open_xdelta_fd(from_sha1: bytes, to_sha1: bytes):
         # FIXME(1): there is no easy way to WRITE a file in `diskcache',
         # the module wants to READ the file itself, so tempfile is used.
         # FIXME(2): disk_min_file_size is not respected for alike pipes.
+        # See https://github.com/grantjenks/python-diskcache/issues/11
+        # That costs ~15% (~400 MiB) being spent on file tails.
         from_git = xml_git_by_sha1(from_sha1)
         to_git = xml_git_by_sha1(to_sha1)
         with tempfile.TemporaryFile() as tmp, \
@@ -118,6 +131,11 @@ def hexlify_values(d):
     return {k: binascii.hexlify(v).decode('ascii') if isinstance(v, bytes) else v
             for k, v in d.items()}
 
-@app.route('/since_update_time-count/<int:since>/<int:count>')
-def list_since_count(since, count):
-    return {'r': [hexlify_values(x) for x in g.gitlog.dumps_since(since, count)]}
+# FIXME: jsonl reduces peak memory usage
+@app.route('/since_update_time/<int:since>/<int:count>')
+def list_since(since, count):
+    return {'data': [hexlify_values(x) for x in g.gitlog.dumps_since(since, count)]}
+@app.route('/since_update_time/<int:since>/<int:count>/<log_columns:columns>')
+def list_since_columns(since, count, columns):
+    # FIXME: maybe redirect to canonical order of `columns` to ease HTTP-level caching
+    return {'data': [hexlify_values(x) for x in g.gitlog.dumps_since(since, count, columns)]}

@@ -1,6 +1,3 @@
-# tar cz Dockerfile.rkngiweb rkndex | docker build -t darkk/rkn:giweb -f Dockerfile.rkngiweb -
-# ^^ to avoid adding huge $PWD to context
-
 FROM ubuntu:18.04
 
 RUN set -ex \

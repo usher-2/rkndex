@@ -1,6 +1,3 @@
-# tar cz Dockerfile.rknu2ex usher2_exporter | docker build -t darkk/rkn:u2ex -f Dockerfile.rknu2ex -
-# ^^ to avoid adding huge $PWD to context
-
 FROM ubuntu:18.04
 
 RUN set -ex \
