@@ -52,6 +52,9 @@ NAME = 'John Doe'
 EMAIL = 'noreply@example.net'
 RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
 RKN_EPOCH = 1343462400
+ZERO_XML = b'<?xml version="1.0" encoding="windows-1251"?><reg:register updateTime="2012-07-28T12:00:00+04:00" formatVersion="0.0" xmlns:reg="http://rsoc.ru"></reg:register>'
+ZERO_SHA1 = '8f751f87f10251f8f7371826346a3d7d7332a424'
+ZERO_GIT = '014e3fab9f1ec53d38c5422d9211b6818fdf3a6a'
 
 @contextmanager
 def ScopedTmpdir(*args, **kwargs):
@@ -75,15 +78,29 @@ def git_init():
         new = True
     else:
         new = False
+    git_zero_ts = '{:d} +0400'.format(RKN_EPOCH)
     os.environ['GIT_DIR'] = os.path.abspath(OPT.git_dir)
     if new:
         check_call(['git', 'config', 'user.name', NAME])
         check_call(['git', 'config', 'user.email', EMAIL])
-        empty_tree = check_output(['git', 'hash-object', '-t', 'tree', '/dev/null']).strip()
-        commit = check_output(['git', 'commit-tree', '-m', 'Initial commit', empty_tree], env=dict(os.environ,
-            GIT_AUTHOR_DATE='{:d} +0400'.format(RKN_EPOCH),
-            GIT_COMMITTER_DATE='{:d} +0400'.format(RKN_EPOCH)
+        tree = check_output(['git', 'hash-object', '-t', 'tree', '/dev/null']).strip()
+        commit = check_output(['git', 'commit-tree', '-m', 'Initial commit', tree], env=dict(os.environ,
+            GIT_AUTHOR_DATE=git_zero_ts,
+            GIT_COMMITTER_DATE=git_zero_ts,
         )).strip()
+        check_call(['git', 'update-ref', 'HEAD', commit])
+    if not git_blob_exists(ZERO_GIT):
+        head = check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
+        zero_git = check_output(['git', 'hash-object', '-w', '--stdin'], input=ZERO_XML).strip().decode('ascii')
+        assert zero_git == ZERO_GIT
+        check_call(['git', 'read-tree', '--empty'])
+        check_call(['git', 'update-index', '--add',
+             '--cacheinfo', '100644,{:s},zero.xml'.format(zero_git),
+        ])
+        tree = check_output(['git', 'write-tree']).strip().decode('ascii')
+        commit = check_output(['git', 'commit-tree', '-p', head, '-m', 'Add zero.xml', tree], env=dict(os.environ,
+                GIT_COMMITTER_DATE=git_zero_ts,
+                GIT_AUTHOR_DATE=git_zero_ts)).strip().decode('ascii')
         check_call(['git', 'update-ref', 'HEAD', commit])
     os.environ['GIT_COMMITTER_NAME'] = NAME
     os.environ['GIT_COMMITTER_EMAIL'] = EMAIL
