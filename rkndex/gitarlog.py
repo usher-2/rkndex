@@ -7,7 +7,7 @@ import binascii
 import sqlite3
 from subprocess import Popen, run, PIPE
 
-RKN_EPOCH = 1343462400 # Sat Jul 28 12:00:00 MSK 2012
+from rkndex.const import RKN_EPOCH
 
 class GitarLog(object):
     public_columns = frozenset(('update_time', 'update_time_urgently', 'signing_time',

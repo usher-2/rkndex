@@ -17,6 +17,7 @@ import werkzeug.routing
 from rkndex.popen import ScopedPopen, PIPE
 from rkndex.gitarlog import GitarLog
 from rkndex.filediff import write_content_diff
+from rkndex.const import ZERO_BINSHA1, ZERO_BINGIT
 
 app = Flask(__name__)
 
@@ -104,7 +105,7 @@ def open_xdelta_fd(from_sha1: bytes, to_sha1: bytes):
         # FIXME(2): disk_min_file_size is not respected for alike pipes.
         # See https://github.com/grantjenks/python-diskcache/issues/11
         # That costs ~15% (~400 MiB) being spent on file tails.
-        from_git = xml_git_by_sha1(from_sha1)
+        from_git = xml_git_by_sha1(from_sha1) if from_sha1 != ZERO_BINSHA1 else ZERO_BINGIT
         to_git = xml_git_by_sha1(to_sha1)
         with tempfile.TemporaryFile() as tmp, \
              git_cat_file(from_git) as in1, \
