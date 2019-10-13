@@ -32,7 +32,7 @@ import traceback
 import zipfile
 from contextlib import contextmanager
 from operator import itemgetter
-from subprocess import run, check_call, check_output, Popen, PIPE # TODO replace check_call, check_output, with `run`
+from subprocess import run, check_call, check_output, Popen, PIPE
 from tempfile import NamedTemporaryFile
 
 import requests
@@ -227,16 +227,16 @@ def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
     # other fields are preserved, so they're only stored in commit messages.
     mtime_json = [{k: _[k] for k in ('name', 'mtime')} for _ in (xmlmeta, sigmeta)]
     mtime_json = json.dumps(mtime_json, sort_keys=True, separators=(',', ':')).encode('utf-8')
-    mtime_blob = run(['git', 'hash-object', '-w', '--stdin'], input=mtime_json, stdout=PIPE, check=True).stdout.strip().decode('ascii')
-    xmlblob, sigblob = run(['git', 'hash-object', '-w', '--', dump_xml, dump_xml_sig], stdout=PIPE, check=True).stdout.strip().decode('ascii').split()
-    run(['git', 'read-tree', '--empty'], check=True)
+    mtime_blob = check_output(['git', 'hash-object', '-w', '--stdin'], input=mtime_json).strip().decode('ascii')
+    xmlblob, sigblob = check_output(['git', 'hash-object', '-w', '--', dump_xml, dump_xml_sig]).strip().decode('ascii').split()
+    check_call(['git', 'read-tree', '--empty'])
     signing_utc = time.gmtime(signing_ts)
-    run(['git', 'update-index', '--add',
+    check_call(['git', 'update-index', '--add',
          '--cacheinfo', '100644,{:s},meta.json'.format(mtime_blob),
          '--cacheinfo', '100644,{:s},dump.xml'.format(xmlblob),
          '--cacheinfo', '100644,{:s},dump.xml.sig'.format(sigblob),
-    ], check=True)
-    tree = run(['git', 'write-tree'], stdout=PIPE, check=True).stdout.strip().decode('ascii')
+    ])
+    tree = check_output(['git', 'write-tree']).strip().decode('ascii')
     # index is prepared with the proper tree, let's prepare commit
     signing_raw = isoformat(signing_ts, ut.tzinfo)
     body = [
@@ -255,13 +255,13 @@ def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
         ))
     body = '\n'.join(body).encode('utf-8')
     # do the commit, `git-commit` needs working tree, so it's not used
-    head = run(['git', 'rev-parse', 'HEAD'], stdout=PIPE, check=True).stdout.strip().decode('ascii')
+    head = check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
     git_ts = '{:d} +{:02.0f}00'.format(signing_ts, ut.tzinfo.utcoffset(None).seconds / 3600)
-    commit = run(['git', 'commit-tree', '-p', head, tree], input=body, env=dict(os.environ,
+    commit = check_output(['git', 'commit-tree', '-p', head, tree], input=body, env=dict(os.environ,
             GIT_AUTHOR_NAME=subject_cn.encode('utf-8'),
             GIT_COMMITTER_DATE=git_ts,
-            GIT_AUTHOR_DATE=git_ts), stdout=PIPE, check=True).stdout.strip().decode('ascii')
-    run(['git', 'update-ref', 'HEAD', commit], check=True)
+            GIT_AUTHOR_DATE=git_ts)).strip().decode('ascii')
+    check_call(['git', 'update-ref', 'HEAD', commit])
 
 GIT_OBJDIR_RE = re.compile(r'[0-9a-fA-F]{2}')
 
@@ -277,8 +277,8 @@ def objects_heap_size():
 
 def objects_repack():
     # incremental pack, `git gc` will do full-pack probably...
-    run(['git', 'repack', '--window-memory={}'.format(OPT.window_memory)], check=True)
-    run(['git', 'prune-packed'], check=True)
+    check_call(['git', 'repack', '--window-memory={}'.format(OPT.window_memory)])
+    check_call(['git', 'prune-packed'])
 
 def load_known_dump_xml():
     local_sha256 = set()
