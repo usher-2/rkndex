@@ -10,18 +10,14 @@ RUN set -ex \
         python3-pip python3-setuptools python3-wheel \
     && pip3 install \
         diskcache \
+        flask \
+        gunicorn \
         prometheus_client \
         xdelta3 \
     && apt-get -y --autoremove remove \
         build-essential \
         python3-dev \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/* /var/tmp/* \
-    && :
-
-RUN set -x \
-    && pip3 install \
-        flask \
-        gunicorn \
     && :
 
 COPY rkndex /usr/local/lib/python3.6/dist-packages/rkndex
