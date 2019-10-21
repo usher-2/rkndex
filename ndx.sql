@@ -102,7 +102,8 @@ CREATE TABLE content (
     value               text NOT NULL,
     ip_inet             inet,
 
-    CONSTRAINT both_ip CHECK((tag IN ('url', 'domain')) = (ip_inet IS NULL)),
+    -- DETAIL:  Failing row contains (891835, <null>, t, f, t, t, f, f, t, f, 2018-04-21 07:54:00, 2018-04-21 08:20:00, 2018-04-21 11:18:28, 2018-04-21 08:20:00+00, null, ip, , null).
+    -- CONSTRAINT both_ip CHECK((tag IN ('url', 'domain')) = (ip_inet IS NULL)),
     CONSTRAINT good_from CHECK(NOT is_deletion OR update_time_from > '2012-07-28 08:00:00'),
     CONSTRAINT from_lt_to CHECK(update_time_from < update_time_to),
 

@@ -203,9 +203,12 @@ def main_alldiff(pgconn, giweb):
     from_to = [object()]
     while len(from_to):
         with pgconn, pgconn.cursor() as c:
-            c.execute('''SELECT xml_sha1_from, xml_sha1_to FROM known_diff
-                         EXCEPT
-                         SELECT xml_sha1_from, xml_sha1_to FROM ingested_diff
+            c.execute('''SELECT * FROM (
+                            SELECT xml_sha1_from, xml_sha1_to FROM known_diff
+                            EXCEPT
+                            SELECT xml_sha1_from, xml_sha1_to FROM ingested_diff
+                         ) t
+                         ORDER BY random()
                          LIMIT 100''')
             from_to = list(c)
         for from_binsha1, to_binsha1 in from_to:
@@ -266,7 +269,8 @@ class DbWriter(object):
                 self.write_content_row(head + tail)
         for tag in ('ip', 'ipv6', 'ipSubnet', 'ipv6Subnet'):
             for cdata, tag_ts in c[tag].items():
-                tail = (tag_ts, tag, cdata, cdata)
+                ip_inet = cdata if len(cdata) else None
+                tail = (tag_ts, tag, cdata, ip_inet)
                 self.write_content_row(head + tail)
     def write_content_row(self, row):
         types = (
