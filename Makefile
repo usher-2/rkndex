@@ -32,7 +32,7 @@ build-giweb :
 build-pg :
 	tar cz Dockerfile.rknpg ndx.sql pg-distrust.sh | docker build -t darkk/rkn:pg -f Dockerfile.rknpg -
 build-u2ex :
-	tar cz Dockerfile.rknu2ex usher2_exporter | docker build -t darkk/rkn:u2ex -f Dockerfile.rknu2ex -
+	tar cz Dockerfile.rknu2ex rkndex usher2_exporter | docker build -t darkk/rkn:u2ex -f Dockerfile.rknu2ex -
 
 push-dexer :
 	docker push darkk/rkn:dexer

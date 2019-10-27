@@ -11,15 +11,8 @@ import dateutil.parser
 import prometheus_client as prom # https://github.com/prometheus/client_python
 import requests
 
-def schedule_every(period):
-    while True:
-        t = time.monotonic()
-        yield
-        t = time.monotonic() - t
-        if t < period:
-            time.sleep(period - t)
-
-LAST_MODIFIED_EPOCH = 'Thu, 01 Jan 1970 00:00:00 GMT'
+from rkndex.const import LAST_MODIFIED_EPOCH
+from rkndex.util import schedule_every
 
 U2_EXC = prom.Counter('usher2_exceptions', 'Count handle_slug exceptions')
 U2_REQS = prom.Counter('usher2_requests', 'HTTP status codes', ['handler', 'code'])
@@ -74,9 +67,7 @@ def main():
 
         inter_req_delay = opt.scrape_interval / len(known_slugs)
         req_timeout = max(inter_req_delay, 2.0)
-        slug_cycle = itertools.cycle(known_slugs)
-        for _ in schedule_every(inter_req_delay):
-            slug = next(slug_cycle)
+        for slug in schedule_every(known_slugs, inter_req_delay):
             try:
                 h_etag, h_lastmod = handle_slug(slug, sess, req_timeout, etag[slug], lastmod[slug])
                 if h_etag:
