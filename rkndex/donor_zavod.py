@@ -39,10 +39,12 @@ class DonorZavod(object):
             r.raise_for_status()
             page = self.regex.findall(r.text)
             for zip_fname, zip_size in page:
-                self.db.execute('''INSERT INTO zavod (zip_fname, zip_size, fetched, last_seen) 
-                    VALUES (?, ?, 0, ?)
-                    ON CONFLICT (zip_fname) DO UPDATE SET last_seen = ?''',
-                    (zip_fname, int(zip_size), now, now))
+                # ON CONFLICT .. DO UPDATE needs sqlite3.sqlite_version > 3.24.0, but ubuntu:18.04 has 3.22.0
+                self.db.execute('''INSERT OR IGNORE INTO zavod (zip_fname, zip_size, fetched, last_seen)
+                    VALUES (?, ?, 0, ?)''',
+                    (zip_fname, int(zip_size), now))
+                self.db.execute('UPDATE zavod SET last_seen = ? WHERE zip_fname = ?',
+                    (now, zip_fname))
             self.db.execute('DELETE FROM zavod WHERE last_seen < ?', (now - 86400,)) # maintenance
             it = self.db.execute('''SELECT zip_fname, zip_size FROM zavod
                     WHERE NOT fetched OR xml_sha256 IS NOT NULL AND xml_sha256 NOT IN (

@@ -295,6 +295,7 @@ def donors_loop(gitarlog, eais, donors):
         except Exception:
             traceback.print_exc(file=sys.stderr)
             todo = []
+        sys.stderr.flush() # docker makes stderr buffered for some reason
         for handle in todo:
             try:
                 with TemporaryDirectory() as tmpdir:
@@ -320,6 +321,7 @@ def donors_loop(gitarlog, eais, donors):
                             eais.upload(os.path.join(tmpdir, DUMP_ZIP))
             except Exception:
                 traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush() # docker makes stderr buffered for some reason
 
 def git_size(s):
     suffix = {

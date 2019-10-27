@@ -90,9 +90,9 @@ class DonorEais(object):
             xml_binsha256 = binascii.unhexlify(el['id'])
             # `ts=` arg should be an index on `ut` field of response
             # see README.md for description of the keys
-            self.db.execute('INSERT INTO eais '
+            self.db.execute('INSERT OR IGNORE INTO eais '
                 '(update_time, update_time_urgently, xml_size, xml_mtime, xml_sha256) '
-                'VALUES(?, ?, ?, ?, ?) ON CONFLICT DO NOTHING', (
+                'VALUES(?, ?, ?, ?, ?)', (
                 el['ut'], el['utu'], el['as'], el['m'], xml_binsha256))
             since = max(since, el['ut'])
         maybe_more = len(page) == page_size
