@@ -8,10 +8,13 @@ import re
 import time
 import zipfile
 
+import prometheus_client as prom
 import requests
 
 from rkndex.util import save_url, file_sha256
 from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT
+
+GITAR_ZAVOD_PAGE_SIZE = prom.Gauge('gitar_zavod_page_size', 'Number of files on zavod page')
 
 class DonorZavod(object):
     name = 'zavod'
@@ -30,7 +33,7 @@ class DonorZavod(object):
             xml_sha256  BLOB,
             last_seen   INTEGER NOT NULL)''')
 
-    regex = re.compile(r'^<a href="(registry-[-0-9]+\.zip)">\1</a> +[^ ]+ [^ ]+ +(\d+)$', re.MULTILINE)
+    regex = re.compile(r'<a href="(registry-[-0-9]+\.zip)">\1</a> +[^ ]+ [^ ]+ +(\d+)\r', re.MULTILINE)
     def list_handles(self, limit):
         now = int(time.time())
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
@@ -38,6 +41,7 @@ class DonorZavod(object):
             r = self.s.get(self.dir_url)
             r.raise_for_status()
             page = self.regex.findall(r.text)
+            GITAR_ZAVOD_PAGE_SIZE.set(len(page))
             for zip_fname, zip_size in page:
                 # ON CONFLICT .. DO UPDATE needs sqlite3.sqlite_version > 3.24.0, but ubuntu:18.04 has 3.22.0
                 self.db.execute('''INSERT OR IGNORE INTO zavod (zip_fname, zip_size, fetched, last_seen)
