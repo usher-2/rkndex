@@ -10,6 +10,12 @@ https://www.pgconf.asia/JA/2017/wp-content/uploads/sites/2/2017/12/D2-B1.pdf
 Auth: `Authorization: Bearer $(gpg --quiet --decrypt --batch <eais-schors.token.gpg)`
 Root: `https://eais.example.net/`
 
+## /upload
+
+```
+find ./data -type f -name "*.zip" | xargs -L 1 -I %R  curl -k -X POST -H "Authorization: Bearer ${TECH_KEY}" -F "file=@%R" https://eais.example.net/upload
+```
+
 ## /hot and /get/${id}
 
 - The latest dump.zip file

@@ -26,7 +26,7 @@ all :
 build-dexer :
 	tar cz Dockerfile.rkndexer rkndex rkndexer | docker build -t darkk/rkn:dexer -f Dockerfile.rkndexer -
 build-gitar :
-	tar cz Dockerfile.rkngitar rkngitar | docker build -t darkk/rkn:gitar -f Dockerfile.rkngitar -
+	tar cz Dockerfile.rkngitar rkndex rkngitar | docker build -t darkk/rkn:gitar -f Dockerfile.rkngitar -
 build-giweb :
 	tar cz Dockerfile.rkngiweb rkndex | docker build -t darkk/rkn:giweb -f Dockerfile.rkngiweb -
 build-pg :

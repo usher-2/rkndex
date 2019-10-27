@@ -29,6 +29,14 @@ class GitarLog(object):
                 self.insert_up_to(db_head, git_head)
                 self.update_db_head(git_head)
 
+    def max_update_time(self):
+        return next(self.db.execute('SELECT COALESCE(MAX(update_time), 0) FROM log'))[0]
+
+    def needs_xml_sha256(self, xml_binsha256):
+        assert len(xml_binsha256) == 32
+        it = self.db.execute('SELECT COUNT(*) FROM log WHERE xml_sha256 = ?', (xml_binsha256,))
+        return next(it)[0] == 0
+
     def xml_git_by_sha1(self, xml_sha1):
         assert len(xml_sha1) == 20 # should be bytes
         with self.db:
@@ -77,6 +85,7 @@ class GitarLog(object):
     sig_sha512      BLOB NOT NULL
 )''')
         self.db.execute('CREATE INDEX IF NOT EXISTS log_update_time ON log (update_time)')
+        self.db.execute('CREATE UNIQUE INDEX IF NOT EXISTS log_xml_sha256 ON log (xml_sha256)')
 
     def update_db_head(self, head):
         assert len(head) == 20

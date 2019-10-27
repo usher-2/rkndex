@@ -30,5 +30,6 @@ RUN set -ex \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/* /var/tmp/* \
     && :
 
+COPY rkndex /usr/local/lib/python3.6/dist-packages/rkndex
 COPY rkngitar /opt/rkngitar
 ENTRYPOINT ["/opt/rkngitar"]

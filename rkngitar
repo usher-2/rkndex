@@ -14,7 +14,6 @@
 # Code _hopes_ that mtime of dump.xml{,.sig} is preserved by unzip.
 
 import argparse
-import binascii
 import calendar
 import codecs
 import datetime
@@ -22,27 +21,28 @@ import functools
 import hashlib
 import json
 import os
-import random
 import re
-import shutil
 import sys
-import tempfile
 import time
 import traceback
-import zipfile
 from contextlib import contextmanager
-from operator import itemgetter
 from subprocess import run, check_call, check_output, Popen, PIPE
-from tempfile import NamedTemporaryFile
+from tempfile import TemporaryDirectory
 
-import requests
 import prometheus_client as prom # https://github.com/prometheus/client_python
+
+from rkndex.const import RKN_EPOCH, ZERO_GIT, ZERO_SHA1, ZERO_XML
+from rkndex.donor_che import DonorChe
+from rkndex.donor_eais import DonorEais
+from rkndex.donor_zavod import DonorZavod
+from rkndex.gitarlog import GitarLog
+from rkndex.util import schedule_every
 
 GITAR_LATENCY = prom.Summary('gitar_duration_seconds', 'Step latency', ['step'])
 GITAR_EXCEPTIONS = prom.Counter('gitar_exceptions', 'Step exceptions', ['step'])
-GITAR_UPDATETIME = prom.Gauge('gitar_update_time', 'XML updateTime')
+GITAR_UPDATETIME = prom.Gauge('gitar_update_time', 'XML updateTime', ['src'])
 HEAP_BYTES = prom.Gauge('gitar_heap_bytes', 'Non-packed .git/objects/?? size')
-for step in ('todo', 'fetch', 'store', 'du', 'repack'):
+for step in ('todo', 'fetch', 'store', 'upload', 'du', 'repack'):
     GITAR_LATENCY.labels(step)
     GITAR_EXCEPTIONS.labels(step)
 
@@ -51,18 +51,6 @@ OPT = None # CLI options
 NAME = 'John Doe'
 EMAIL = 'noreply@example.net'
 RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
-RKN_EPOCH = 1343462400
-ZERO_XML = b'<?xml version="1.0" encoding="windows-1251"?><reg:register updateTime="2012-07-28T12:00:00+04:00" formatVersion="0.0" xmlns:reg="http://rsoc.ru"></reg:register>'
-ZERO_SHA1 = '8f751f87f10251f8f7371826346a3d7d7332a424'
-ZERO_GIT = '014e3fab9f1ec53d38c5422d9211b6818fdf3a6a'
-
-@contextmanager
-def ScopedTmpdir(*args, **kwargs):
-    tmpdir = tempfile.mkdtemp(*args, **kwargs)
-    try:
-        yield tmpdir
-    finally:
-        shutil.rmtree(tmpdir)
 
 # Decorator is not used as @H.labels('foo').time() bar is SyntaxError, see following:
 # - https://github.com/prometheus/client_python/issues/157
@@ -297,90 +285,41 @@ def objects_repack():
     check_call(['git', 'repack', '--window-memory={}'.format(OPT.window_memory)])
     check_call(['git', 'prune-packed'])
 
-def load_known_dump_xml():
-    local_sha256 = set()
-    max_update_time = 0
-    proc = Popen(['git', 'log', '--format=%b'], stdout=PIPE)
-    for line in proc.stdout:
-        if line.startswith(b'SHA256 ') and line.endswith(b' dump.xml\n'):
-            local_sha256.add(binascii.unhexlify(line.split()[1]))
-        elif line.endswith(b' updateTime\n'):
-            max_update_time = max(max_update_time, int(line.split()[-2]))
-    if proc.wait() != 0:
-        raise RuntimeError('git log failure', proc.returncode)
-    return max_update_time, local_sha256
-
-def get_some_eais_dumps(sess, ts_start, local_sha256):
-    todo = []
-    # 4096 entries to get ~ 1 MiB of metadata per round-trip.  Number of
-    # entries is randomized to avoid UNLIKELY case when two dumps have the same
-    # timestamp and the timestamp falls at the boundary of the "page".
-    page_size = random.randint(4096 - 64, 4096 + 64)
-    r = sess.get('https://{}/start?ts={:d}&c={:d}'.format(OPT.eais_fqdn, ts_start, page_size))
-    r.raise_for_status()
-    for el in r.json():
-        # `ts=` arg should be an index on `ut` field of response
-        if binascii.unhexlify(el['id']) not in local_sha256:
-            todo.append({k: el[k] for k in ('id', 'as', 'm', 'ut', 'utu')}) # see README.md for keys
-    assert len({_['id'] for _ in todo}) == len(todo), 'Duplicate `id` in TODO list'
-    return todo
-
-def get_dump_zip(sess, zipfd, fileid):
-    r = sess.get('https://{}/get/{}'.format(OPT.eais_fqdn, fileid), stream=True)
-    r.raise_for_status()
-    shutil.copyfileobj(r.raw, zipfd)
-    zipfd.flush()
-
-def zip_extract(zfd, tmpdir, fname, mtime):
-    zfd.extract(fname, path=tmpdir)
-    fpath = os.path.join(tmpdir, fname)
-    os.utime(fpath, (mtime, mtime))
-    return fpath
-
-def commit_dump_zip(zipfd, xml_sha256, xml_size, xml_mtime, update_time, update_time_urgently):
-    with zipfile.ZipFile(zipfd, 'r') as zfd, ScopedTmpdir() as tmpdir:
-        xml = zip_extract(zfd, tmpdir, 'dump.xml', xml_mtime)
-        sig = zip_extract(zfd, tmpdir, 'dump.xml.sig', RKN_EPOCH)
-        assert not git_blob_exists(file_githash(sig)), 'dump.xml.sig is archived, but dump.xml is not'
-        def sanity_cb(xmlmeta, sigmeta, ut, utu):
-            assert xmlmeta['SHA256'] == xml_sha256
-            assert xmlmeta['size'] == xml_size
-            assert ut.timestamp() == update_time
-            assert utu.timestamp() == update_time_urgently
-        commit_files(xml, sig, sanity_cb)
-
-def eais_loop(ts_start, local_sha256):
-    with open(OPT.eais_token) as fd:
-        token = fd.read().strip()
-    with requests.Session() as sess:
-        sess.headers.update({
-            'Authorization': 'Bearer {:s}'.format(token),
-            'User-Agent': 'rkngitar/0.0; https://darkk.net.ru/',
-        })
-        while True:
+def donors_loop(gitarlog, eais, donors):
+    max_update_time = {don.name: float('-inf') for don in donors}
+    for don in schedule_every(donors, 60 / len(donors)):
+        try:
+            with counted_step('todo'):
+                # Only first several handles are taken to cycle through different sources for sure.
+                todo = don.list_handles(limit=5)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            todo = []
+        for handle in todo:
             try:
-                with counted_step('todo'):
-                    todo = get_some_eais_dumps(sess, ts_start, local_sha256)
-                todo.sort(key=itemgetter('ut')) # it _should_ be already sorted, but may be not
-                for el in todo:
-                    assert ts_start < el['ut'], (ts_start, el['ut'])
-                    with NamedTemporaryFile(prefix='tmpzip') as zipfd:
-                        with counted_step('fetch'):
-                            get_dump_zip(sess, zipfd, el['id'])
+                with TemporaryDirectory() as tmpdir:
+                    with counted_step('fetch'):
+                        xml_binsha256 = don.fetch_xml_and_sig(tmpdir, handle)
+                        ut_ts = update_time(os.path.join(tmpdir, DUMP_XML))[0].timestamp()
+                        max_update_time[don.name] = max(max_update_time[don.name], ut_ts)
+                        GITAR_UPDATETIME.labels(don.name).set(max_update_time[don.name])
+                    if gitarlog.needs_xml_sha256(xml_binsha256):
                         with counted_step('store'):
-                            commit_dump_zip(zipfd, el['id'], el['as'], el['m'], el['ut'], el['utu'])
-                    ts_start = max(el['ut'], ts_start)
-                    local_sha256.add(binascii.unhexlify(el['id']))
-                    GITAR_UPDATETIME.set(ts_start)
-                    with counted_step('du'):
-                        sz = objects_heap_size()
-                    HEAP_BYTES.set(sz)
-                    if OPT.objects_xmx < sz:
-                        with counted_step('repack'):
-                            objects_repack()
+                            commit_files(os.path.join(tmpdir, DUMP_XML), os.path.join(tmpdir, DUMP_SIG),
+                                         functools.partial(don.sanity_cb, handle))
+                            gitarlog.poll_fs()
+                            GITAR_UPDATETIME.labels('local').set(gitarlog.max_update_time())
+                        with counted_step('du'):
+                            sz = objects_heap_size()
+                            HEAP_BYTES.set(sz)
+                        if OPT.objects_xmx < sz:
+                            with counted_step('repack'):
+                                objects_repack()
+                    if eais.needs_xml_sha256(xml_binsha256) and eais.write_token:
+                        with counted_step('upload'):
+                            eais.upload(os.path.join(tmpdir, DUMP_ZIP))
             except Exception:
                 traceback.print_exc(file=sys.stderr)
-            time.sleep(60)
 
 def git_size(s):
     suffix = {
@@ -397,6 +336,9 @@ def parse_args():
     p.add_argument('--window-memory', help='Window size for git delta compression', metavar='SIZE', type=git_size, default='384m')
     p.add_argument('--eais-fqdn', help='EAIS service FQDN', metavar='FQDN', required=True)
     p.add_argument('--eais-token', help='EAIS token file', metavar='FILE', required=True)
+    p.add_argument('--eais-woken', help='EAIS upload token file', metavar='FILE')
+    p.add_argument('--che-url', help='Che file', metavar='URL')
+    p.add_argument('--zavod-url', help='Zavod directory', metavar='URL')
     p.add_argument('--capath', help='CA path with GOST certs', metavar='DIR', required=True)
     p.add_argument('--prom-addr', help='Prometheus exporter bind IP', metavar='IP', default='127.0.0.1')
     p.add_argument('--prom-port', help='Prometheus exporter bind port', metavar='PORT', type=int, required=True)
@@ -406,12 +348,27 @@ def main():
     global OPT
     OPT = parse_args()
     git_init()
-    ts_start, local_sha256 = load_known_dump_xml()
     with counted_step('du'):
         HEAP_BYTES.set(objects_heap_size())
-    GITAR_UPDATETIME.set(ts_start)
+    gitarlog = GitarLog(OPT.git_dir, os.path.join(OPT.git_dir, 'rkngitar.sqlite'))
+    GITAR_UPDATETIME.labels('local').set(gitarlog.max_update_time())
+
+    with open(OPT.eais_token) as fd:
+        eais_token = fd.read().strip()
+    if OPT.eais_woken:
+        with open(OPT.eais_woken) as fd:
+            write_token = fd.read().strip()
+    else:
+        write_token = None
+    eais = DonorEais(gitarlog.db, OPT.eais_fqdn, eais_token, write_token)
+    donors = [eais]
+    if OPT.zavod_url:
+        donors.append(DonorZavod(gitarlog.db, OPT.zavod_url))
+    if OPT.che_url:
+        donors.append(DonorChe(gitarlog.db, OPT.che_url))
+
     prom.start_http_server(OPT.prom_port, OPT.prom_addr)
-    eais_loop(ts_start, local_sha256)
+    donors_loop(gitarlog, eais, donors)
 
 if __name__ == '__main__':
     main()

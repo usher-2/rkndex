@@ -203,6 +203,8 @@ def main_alldiff(pgconn, giweb):
     from_to = [object()]
     while len(from_to):
         with pgconn, pgconn.cursor() as c:
+            # psycopg2.DataError: invalid input syntax for type timestamp: "T"
+            # CONTEXT:  COPY content, line 1, column include_time: "T"
             c.execute('''SELECT * FROM (
                             SELECT xml_sha1_from, xml_sha1_to FROM known_diff
                             EXCEPT

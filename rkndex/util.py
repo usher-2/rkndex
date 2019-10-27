@@ -8,6 +8,8 @@ import hashlib
 import itertools
 import time
 
+# NB: only stdlib deps in this file
+
 def save_url(path, session, url):
     r = session.get(url, stream=True)
     r.raise_for_status()
