@@ -31,7 +31,7 @@ from tempfile import TemporaryDirectory
 
 import prometheus_client as prom # https://github.com/prometheus/client_python
 
-from rkndex.const import RKN_EPOCH, ZERO_GIT, ZERO_SHA1, ZERO_XML
+from rkndex.const import RKN_EPOCH, ZERO_GIT, ZERO_XML, DUMP_XML, DUMP_SIG, DUMP_ZIP
 from rkndex.donor_che import DonorChe
 from rkndex.donor_eais import DonorEais
 from rkndex.donor_zavod import DonorZavod

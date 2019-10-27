@@ -100,7 +100,7 @@ class DonorEais(object):
 
     def fetch_xml_and_sig(self, tmpdir, handle):
         _, _, _, xml_mtime, xml_binsha256 = handle
-        xml_sha256 = binascii.hexlify(xml_binsha256).encode('ascii')
+        xml_sha256 = binascii.hexlify(xml_binsha256).decode('ascii')
         zip_path = os.path.join(tmpdir, DUMP_ZIP)
         save_url(zip_path, self.s, 'https://{}/get/{}'.format(self.fqdn, xml_sha256))
         with zipfile.ZipFile(zip_path, 'r') as zfd:
@@ -114,7 +114,7 @@ class DonorEais(object):
     @staticmethod
     def sanity_cb(handle, xmlmeta, sigmeta, ut, utu):
         update_time, update_time_urgently, xml_size, _, xml_binsha256 = handle
-        xml_sha256 = binascii.hexlify(xml_binsha256).encode('ascii')
+        xml_sha256 = binascii.hexlify(xml_binsha256).decode('ascii')
         if xmlmeta['SHA256'] != xml_sha256:
             raise RuntimeError('Bad xml_sha256', xmlmeta['SHA256'], xml_sha256)
         if xmlmeta['size'] != xml_size:

@@ -54,7 +54,7 @@ class DonorChe(object):
             zfd.extract(DUMP_SIG, path=tmpdir)
             zfd.extract(DUMP_XML, path=tmpdir)
         self.etag = r.headers['etag']
-        self.last_modified = r.headers['last_modified']
+        self.last_modified = r.headers['last-modified']
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
         with self.db:
             self.db.execute('UPDATE che SET etag = ?, last_modified = ?',
