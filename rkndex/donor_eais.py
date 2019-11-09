@@ -15,7 +15,7 @@ from rkndex.util import save_url
 from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT, RKN_EPOCH
 
 class DonorEais(object):
-    name = 'zavod'
+    name = 'eais'
     def __init__(self, sqlite_db, fqdn, token, write_token=None):
         self.db = sqlite_db
         self.create_table()
@@ -60,13 +60,13 @@ class DonorEais(object):
                 self._list_full()
                 self.db.execute('UPDATE eais_fullsync_ts SET time = ?', (now, ))
             else:
-                self._list_since(self._max_update_time())
+                self._list_since(self.max_update_time())
             it = self.db.execute('''SELECT update_time, update_time_urgently, xml_size, xml_mtime, xml_sha256
                 FROM eais WHERE xml_sha256 NOT IN (SELECT xml_sha256 FROM log) LIMIT ?''', (limit,))
             ret = list(it)
         return ret
 
-    def _max_update_time(self):
+    def max_update_time(self):
         return next(self.db.execute('SELECT COALESCE(MAX(update_time), 0) FROM eais'))[0]
 
     def _fullsync_ts(self):

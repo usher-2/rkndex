@@ -322,6 +322,9 @@ def donors_loop(gitarlog, eais, donors):
             except Exception:
                 traceback.print_exc(file=sys.stderr)
             sys.stderr.flush() # docker makes stderr buffered for some reason
+        if isinstance(don, DonorEais): # maybe something fresh appeared after `todo`
+            max_update_time[don.name] = max(max_update_time[don.name], don.max_update_time())
+            GITAR_UPDATETIME.labels(don.name).set(max_update_time[don.name])
 
 def git_size(s):
     suffix = {
