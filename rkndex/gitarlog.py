@@ -3,6 +3,7 @@
 # Module to cache `git log` of rkn.git repo in sqlite3 database.
 #
 
+import sys
 import binascii
 import sqlite3
 from subprocess import Popen, run, PIPE
@@ -43,6 +44,15 @@ class GitarLog(object):
             it = self.db.execute('SELECT xml_git FROM log WHERE xml_sha1 = ? LIMIT 1', (xml_sha1,))
         row = next(it, None)
         return row[0] if row is not None else None
+
+    def digest_xml_sha1(self):
+        r = 0
+        from_bytes, byteorder = int.from_bytes, sys.byteorder # shaves 25% of loop runtime
+        with self.db:
+            # NB: order of rows is not important for `xor`
+            for xml_sha1, in self.db.execute('SELECT xml_sha1 FROM log'):
+                r ^= from_bytes(xml_sha1, byteorder)
+        return r.to_bytes(20, byteorder)
 
     def dumps_since(self, since, count, columns=None):
         if columns is None:

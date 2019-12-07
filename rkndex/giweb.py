@@ -119,6 +119,10 @@ def open_xdelta_fd(from_sha1: bytes, to_sha1: bytes):
             g.cache.set(cache_key, tmp, read=True)
     return g.cache.get(cache_key, read=True)
 
+@app.route('/digest_xml_sha1')
+def digest_xml_sha1():
+    return {'digest_xml_sha1': g.gitlog.digest_xml_sha1().hex()}
+
 @app.route('/xdelta/<sha1:from_sha1>/<sha1:to_sha1>')
 def xdelta(from_sha1, to_sha1):
     fd = open_xdelta_fd(from_sha1, to_sha1)
