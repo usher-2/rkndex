@@ -5,6 +5,7 @@
 
 import datetime
 import random
+import sys
 from contextlib import closing
 
 import requests
@@ -26,6 +27,11 @@ def iter_known_dumps_with_duplicates(giweb):
             if len(resp) < page_size:
                 break
 
+def fetch_digest_xml_sha1(giweb):
+    resp = requests.get('{}/digest_xml_sha1'.format(giweb))
+    resp.raise_for_status()
+    return bytes.fromhex(resp.json()['digest_xml_sha1'])
+
 def main_list_valwrap(v):
     if isinstance(v, str):
         return '\\\\x' + v
@@ -36,12 +42,23 @@ def main_list_valwrap(v):
     else:
         raise ValueError(v)
 
+def digest_xml_sha1(cursor):
+    r = 0
+    from_bytes, byteorder = int.from_bytes, sys.byteorder
+    cursor.execute('SELECT xml_sha1 FROM known_dump')
+    for xml_sha1, in cursor:
+        r ^= from_bytes(xml_sha1, byteorder)
+    return r.to_bytes(20, byteorder)
+
 def main_list(pgconn, giweb):
     # PGCopyFrom reduces runtime from 20s to 7s compared to row-by-row INSERT
     keys = ('update_time', 'update_time_urgently', 'signing_time', 'xml_mtime', 'sig_mtime',
             'xml_md5', 'sig_md5', 'xml_sha1', 'sig_sha1',
             'xml_sha256', 'sig_sha256', 'xml_sha512', 'sig_sha512')
+    remote_digest = fetch_digest_xml_sha1(giweb)
     with pgconn, pgconn.cursor() as c:
+        if remote_digest == digest_xml_sha1(c):
+            return False
         # NB: there is no `INCLUDING ALL` as the known_dumps actually has duplicates
         c.execute('CREATE TEMPORARY TABLE tmp (LIKE known_dump) ON COMMIT DROP')
         with closing(PGCopyFrom(pgconn, 'tmp')) as wbuf:
@@ -54,6 +71,7 @@ def main_list(pgconn, giweb):
             ON CONFLICT ON CONSTRAINT known_dump_xml_sha1_sig_sha1_key DO NOTHING''')
         if c.rowcount > 0:
             refresh_known_diff(c)
+    return True
 
 def refresh_known_diff(cursor):
     # TODO: `known_diff` may be real MATERIALIZED VIEW, but I have no time to write relevant code.

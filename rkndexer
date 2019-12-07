@@ -2,11 +2,14 @@
 
 import argparse
 import binascii
+import sys
+import traceback
 
 import psycopg2
 import prometheus_client as prom # https://github.com/prometheus/client_python
 
 import rkndex.indexer as indexer
+from rkndex.util import schedule_every
 
 def str_sha1(s):
     if len(binascii.unhexlify(s)) != 20:
@@ -20,6 +23,7 @@ def parse_args():
     #p.add_argument('--prom-addr', help='Prometheus exporter bind IP', metavar='IP', default='127.0.0.1')
     #p.add_argument('--prom-port', help='Prometheus exporter bind port', metavar='PORT', type=int, required=True)
     act = p.add_mutually_exclusive_group(required=True)
+    act.add_argument('--daemon', action='store_true', help='Run as a daemon-loop')
     act.add_argument('--list', action='store_true', help='Sync list of dumps')
     act.add_argument('--listed-diff', action='store_true', help='Sync all listed diffs')
     act.add_argument('--diff', metavar='SHA1', nargs=2, type=str_sha1, help='Ingest a diff between two blobs')
@@ -36,6 +40,13 @@ def main():
         indexer.main_diff(pgconn, o.giweb, o.diff[0], o.diff[1])
     elif o.listed_diff:
         indexer.main_alldiff(pgconn, o.giweb)
+    elif o.daemon:
+        for _ in schedule_every((None,), 60):
+            try:
+                if indexer.main_list(pgconn, o.giweb): # new objects
+                    indexer.main_alldiff(pgconn, o.giweb) # maybe, fail
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
 
 if __name__ == '__main__':
     main()
