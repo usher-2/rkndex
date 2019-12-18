@@ -33,7 +33,7 @@ class DonorZavod(object):
             xml_sha256  BLOB,
             last_seen   INTEGER NOT NULL)''')
 
-    regex = re.compile(r'<a href="(registry-[-0-9]+\.zip)">\1</a> +[^ ]+ [^ ]+ +(\d+)\r', re.MULTILINE)
+    regex = re.compile(r'<a href="((?:registry-|register_)[-0-9_]+\.zip)">\1</a> +[^ ]+ [^ ]+ +(\d+)\r', re.MULTILINE)
     def list_handles(self, limit):
         now = int(time.time())
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
