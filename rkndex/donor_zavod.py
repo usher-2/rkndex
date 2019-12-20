@@ -35,6 +35,11 @@ class DonorZavod(object):
             last_seen   INTEGER NOT NULL)''')
 
     regex = re.compile(r'<a href="((?:registry-|register_)[-0-9_]+\.zip)">\1</a> +[^ ]+ [^ ]+ +(\d+)\r', re.MULTILINE)
+    BROKEN = {
+        ('register_2019-12-12_20_07_08.zip', 11648696), # e8a8c1aac1d995ad5c5e3f4037d63e979d489e3c5e15e7c8f2b627955608f8d6
+        ('register_2019-12-17_02_36_09.zip', 19009536), # f6bcf1ac8906be0cdc22b411ca0f3dbce61180d280217f970babbabff05953dc
+        ('register_2019-12-18_02_16_09.zip', 26017792), # 4297e14b7c19fbff0e7011338e426d4bb3a14350a37901a6e37c96b48a013651
+    }
     def list_handles(self, limit):
         now = int(time.time())
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
@@ -44,10 +49,14 @@ class DonorZavod(object):
             page = self.regex.findall(r.text)
             GITAR_ZAVOD_PAGE_SIZE.set(len(page))
             for zip_fname, zip_size in page:
+                zip_size = int(zip_size)
+                if (zip_fname, zip_size) in self.BROKEN:
+                    logging.info('%s: skip broken %s. %d bytes', self.name, zip_fname, zip_size)
+                    continue
                 # ON CONFLICT .. DO UPDATE needs sqlite3.sqlite_version > 3.24.0, but ubuntu:18.04 has 3.22.0
                 self.db.execute('''INSERT OR IGNORE INTO zavod (zip_fname, zip_size, fetched, last_seen)
                     VALUES (?, ?, 0, ?)''',
-                    (zip_fname, int(zip_size), now))
+                    (zip_fname, zip_size, now))
                 self.db.execute('UPDATE zavod SET last_seen = ? WHERE zip_fname = ?',
                     (now, zip_fname))
             self.db.execute('DELETE FROM zavod WHERE last_seen < ?', (now - 86400,)) # maintenance
