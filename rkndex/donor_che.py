@@ -4,6 +4,7 @@
 #
 
 import functools
+import logging
 import os
 import zipfile
 
@@ -50,6 +51,9 @@ class DonorChe(object):
         with open(zip_path, 'wb') as fd:
             for blob in iter(functools.partial(r.raw.read, 65536), b''):
                 fd.write(blob)
+        logging.info('%s: got %s. %d bytes, content-length: %s, last-modified: %s, etag: %s',
+                self.name, DUMP_ZIP, os.path.getsize(zip_path), r.headers.get('content-length', '?'),
+                r.headers.get('last-modified', '?'), r.headers.get('etag', '?'))
         with zipfile.ZipFile(zip_path, 'r') as zfd:
             zfd.extract(DUMP_SIG, path=tmpdir)
             zfd.extract(DUMP_XML, path=tmpdir)

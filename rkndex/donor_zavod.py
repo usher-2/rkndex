@@ -3,6 +3,7 @@
 # Fetching data from Zavod donor.
 #
 
+import logging
 import os
 import re
 import time
@@ -59,6 +60,7 @@ class DonorZavod(object):
         zip_fname, zip_size = handle
         zip_path = os.path.join(tmpdir, DUMP_ZIP)
         save_url(zip_path, self.s, '{}/{}'.format(self.dir_url, zip_fname))
+        logging.info('%s: got %s. %d bytes', self.name, zip_fname, os.path.getsize(zip_path))
         if os.path.getsize(zip_path) != zip_size:
             raise RuntimeError('Truncated zip', zip_fname, zip_size, os.path.getsize(zip_path))
         with zipfile.ZipFile(zip_path, 'r') as zfd:

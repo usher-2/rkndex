@@ -4,6 +4,7 @@
 #
 
 import binascii
+import logging
 import os
 import random
 import time
@@ -103,6 +104,8 @@ class DonorEais(object):
         xml_sha256 = binascii.hexlify(xml_binsha256).decode('ascii')
         zip_path = os.path.join(tmpdir, DUMP_ZIP)
         save_url(zip_path, self.s, 'https://{}/get/{}'.format(self.fqdn, xml_sha256))
+        logging.info('%s: got %s. %d bytes, xml_sha256: %s',
+                self.name, DUMP_ZIP, os.path.getsize(zip_path), xml_sha256)
         with zipfile.ZipFile(zip_path, 'r') as zfd:
             zfd.extract(DUMP_XML, path=tmpdir)
             xml_path = os.path.join(tmpdir, DUMP_XML)

@@ -20,6 +20,7 @@ import datetime
 import functools
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -352,6 +353,7 @@ def parse_args():
 def main():
     global OPT
     OPT = parse_args()
+    logging.basicConfig(level=logging.INFO)
     git_init()
     with counted_step('du'):
         HEAP_BYTES.set(objects_heap_size())
