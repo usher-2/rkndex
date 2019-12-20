@@ -50,13 +50,11 @@ class DonorZavod(object):
             GITAR_ZAVOD_PAGE_SIZE.set(len(page))
             for zip_fname, zip_size in page:
                 zip_size = int(zip_size)
-                if (zip_fname, zip_size) in self.BROKEN:
-                    logging.info('%s: skip broken %s. %d bytes', self.name, zip_fname, zip_size)
-                    continue
+                fetched = int((zip_fname, zip_size) in self.BROKEN) # broken files are pre-fetched manually
                 # ON CONFLICT .. DO UPDATE needs sqlite3.sqlite_version > 3.24.0, but ubuntu:18.04 has 3.22.0
                 self.db.execute('''INSERT OR IGNORE INTO zavod (zip_fname, zip_size, fetched, last_seen)
-                    VALUES (?, ?, 0, ?)''',
-                    (zip_fname, zip_size, now))
+                    VALUES (?, ?, ?, ?)''',
+                    (zip_fname, zip_size, fetched, now))
                 self.db.execute('UPDATE zavod SET last_seen = ? WHERE zip_fname = ?',
                     (now, zip_fname))
             self.db.execute('DELETE FROM zavod WHERE last_seen < ?', (now - 86400,)) # maintenance
