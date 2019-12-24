@@ -313,6 +313,7 @@ def donors_loop(gitarlog, eais, donors):
                                          functools.partial(don.sanity_cb, handle))
                             gitarlog.poll_fs()
                             GITAR_UPDATETIME.labels('local').set(gitarlog.max_update_time())
+                        logging.info('local: stored xml_sha256 %s, updateTime %s (%d)', xml_binsha256.hex(), ut_raw, ut_ts)
                         with counted_step('du'):
                             sz = objects_heap_size()
                             HEAP_BYTES.set(sz)
@@ -322,6 +323,7 @@ def donors_loop(gitarlog, eais, donors):
                     if eais.needs_xml_sha256(xml_binsha256) and eais.write_token:
                         with counted_step('upload'):
                             eais.upload(os.path.join(tmpdir, DUMP_ZIP))
+                        logging.info('eais: uploaded xml_sha256 %s, updateTime %s (%d)', xml_binsha256.hex(), ut_raw, ut_ts)
             except Exception:
                 traceback.print_exc(file=sys.stderr)
             sys.stderr.flush() # docker makes stderr buffered for some reason
