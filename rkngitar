@@ -302,9 +302,11 @@ def donors_loop(gitarlog, eais, donors):
                 with TemporaryDirectory() as tmpdir:
                     with counted_step('fetch'):
                         xml_binsha256 = don.fetch_xml_and_sig(tmpdir, handle)
-                        ut_ts = update_time(os.path.join(tmpdir, DUMP_XML))[0].timestamp()
+                        ut_ts, ut_raw, _, _ = update_time(os.path.join(tmpdir, DUMP_XML))
+                        ut_ts = ut_ts.timestamp()
                         max_update_time[don.name] = max(max_update_time[don.name], ut_ts)
                         GITAR_UPDATETIME.labels(don.name).set(max_update_time[don.name])
+                        logging.info('%s: fetched xml_sha256 %s, updateTime %s (%d)', don.name, xml_binsha256.hex(), ut_raw, ut_ts)
                     if gitarlog.needs_xml_sha256(xml_binsha256):
                         with counted_step('store'):
                             commit_files(os.path.join(tmpdir, DUMP_XML), os.path.join(tmpdir, DUMP_SIG),
@@ -345,6 +347,7 @@ def parse_args():
     p.add_argument('--eais-woken', help='EAIS upload token file', metavar='FILE')
     p.add_argument('--che-url', help='Che file', metavar='URL')
     p.add_argument('--zavod-url', help='Zavod directory', metavar='URL')
+    p.add_argument('--zavod-tries', help='Number of tries to fetch from Zavod', metavar='INT', type=int, default=8) # wget's --tries=number is 20 by default
     p.add_argument('--capath', help='CA path with GOST certs', metavar='DIR', required=True)
     p.add_argument('--prom-addr', help='Prometheus exporter bind IP', metavar='IP', default='127.0.0.1')
     p.add_argument('--prom-port', help='Prometheus exporter bind port', metavar='PORT', type=int, required=True)
@@ -370,7 +373,7 @@ def main():
     eais = DonorEais(gitarlog.db, OPT.eais_fqdn, eais_token, write_token)
     donors = [eais]
     if OPT.zavod_url:
-        donors.append(DonorZavod(gitarlog.db, OPT.zavod_url))
+        donors.append(DonorZavod(gitarlog.db, OPT.zavod_url, OPT.zavod_tries))
     if OPT.che_url:
         donors.append(DonorChe(gitarlog.db, OPT.che_url))
 
