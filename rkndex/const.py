@@ -13,6 +13,7 @@ BLOCKTYPE_NULL = '<null>'
 GITAR_USER_AGENT = 'rkngitar/0.0; https://darkk.net.ru/'
 DONOR_POLL_PERIOD = 60
 LAST_MODIFIED_EPOCH = 'Thu, 01 Jan 1970 00:00:00 GMT'
+HTTP_TIMEOUT = 15.5
 
 DUMP_ZIP = 'dump.zip'
 DUMP_XML = 'dump.xml'

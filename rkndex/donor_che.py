@@ -11,7 +11,7 @@ import zipfile
 import requests
 
 from rkndex.util import file_sha256
-from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT, LAST_MODIFIED_EPOCH
+from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT, LAST_MODIFIED_EPOCH, HTTP_TIMEOUT
 
 class DonorChe(object):
     name = 'che'
@@ -37,7 +37,7 @@ class DonorChe(object):
         r = self.s.get(self.file_url, stream=True, headers={
             'If-None-Match': self.etag,
             'If-Modified-Since': self.last_modified,
-        })
+        }, timeout=HTTP_TIMEOUT)
         r.raise_for_status()
         if r.status_code == requests.codes.ok:
             return [r]

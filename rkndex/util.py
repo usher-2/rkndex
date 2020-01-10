@@ -8,10 +8,12 @@ import hashlib
 import itertools
 import time
 
+from rkndex.const import HTTP_TIMEOUT
+
 # NB: only stdlib deps in this file
 
 def save_url(path, session, url):
-    r = session.get(url, stream=True)
+    r = session.get(url, stream=True, timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     with open(path, 'wb') as fd:
         for blob in iter(functools.partial(r.raw.read, 65536), b''):

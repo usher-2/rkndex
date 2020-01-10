@@ -13,7 +13,7 @@ import zipfile
 import requests
 
 from rkndex.util import save_url
-from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT, RKN_EPOCH
+from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT, RKN_EPOCH, HTTP_TIMEOUT
 
 class DonorEais(object):
     name = 'eais'
@@ -84,7 +84,7 @@ class DonorEais(object):
         # entries is randomized to avoid UNLIKELY case when two dumps have the same
         # timestamp and the timestamp falls at the boundary of the "page".
         page_size = random.randint(4096 - 64, 4096 + 64)
-        r = self.s.get('https://{}/start?ts={:d}&c={:d}'.format(self.fqdn, since, page_size))
+        r = self.s.get('https://{}/start?ts={:d}&c={:d}'.format(self.fqdn, since, page_size), timeout=HTTP_TIMEOUT)
         r.raise_for_status()
         page = r.json()
         for el in page:

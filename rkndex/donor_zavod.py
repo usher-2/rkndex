@@ -13,7 +13,7 @@ import prometheus_client as prom
 import requests
 
 from rkndex.util import save_url, file_sha256
-from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT
+from rkndex.const import DUMP_ZIP, DUMP_XML, DUMP_SIG, GITAR_USER_AGENT, HTTP_TIMEOUT
 
 GITAR_ZAVOD_PAGE_SIZE = prom.Gauge('gitar_zavod_page_size', 'Number of files on zavod page')
 
@@ -40,7 +40,7 @@ class DonorZavod(object):
         now = int(time.time())
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
         with self.db:
-            r = self.s.get(self.dir_url)
+            r = self.s.get(self.dir_url, timeout=HTTP_TIMEOUT)
             r.raise_for_status()
             page = self.regex.findall(r.text)
             GITAR_ZAVOD_PAGE_SIZE.set(len(page))
