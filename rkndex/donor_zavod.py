@@ -35,6 +35,9 @@ class DonorZavod(object):
             xml_sha256  BLOB,
             last_seen   INTEGER NOT NULL)''')
 
+    def max_update_time(self):
+        return next(self.db.execute('SELECT COALESCE(MAX(update_time), 0) FROM zavod JOIN log USING (xml_sha256)'))[0]
+
     regex = re.compile(r'<a href="((?:registry-|register_)[-0-9_]+\.zip)">\1</a> +[^ ]+ [^ ]+ +(\d+)\r', re.MULTILINE)
     def list_handles(self, limit):
         now = int(time.time())

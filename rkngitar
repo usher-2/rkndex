@@ -363,7 +363,6 @@ def main():
     with counted_step('du'):
         HEAP_BYTES.set(objects_heap_size())
     gitarlog = GitarLog(OPT.git_dir, os.path.join(OPT.git_dir, 'rkngitar.sqlite'))
-    GITAR_UPDATETIME.labels('local').set(gitarlog.max_update_time())
 
     with open(OPT.eais_token) as fd:
         eais_token = fd.read().strip()
@@ -378,6 +377,11 @@ def main():
         donors.append(DonorZavod(gitarlog.db, OPT.zavod_url, OPT.zavod_tries))
     if OPT.che_url:
         donors.append(DonorChe(gitarlog.db, OPT.che_url))
+
+    GITAR_UPDATETIME.labels('local').set(gitarlog.max_update_time())
+    # Following may be inaccurate bootstrap, but it is better than 0 or NaN.
+    for don in donors:
+        GITAR_UPDATETIME.labels(don.name).set(don.max_update_time())
 
     prom.start_http_server(OPT.prom_port, OPT.prom_addr)
     donors_loop(gitarlog, eais, donors)

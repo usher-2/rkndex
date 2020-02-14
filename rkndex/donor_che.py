@@ -31,6 +31,12 @@ class DonorChe(object):
         if next(self.db.execute('SELECT 1 FROM che LIMIT 1'), None) is None:
             self.db.execute('INSERT INTO che VALUES (?, ?)',
                 ('"{}"'.format(os.urandom(16).hex()), LAST_MODIFIED_EPOCH))
+        # NB: pragma_table_info() needs sqlite 3.16.0 (2017-01-02)
+        if next(self.db.execute("SELECT 1 FROM pragma_table_info('che') WHERE name = 'xml_sha256'"), None) is None:
+            self.db.execute('ALTER TABLE che ADD COLUMN xml_sha256 BLOB')
+
+    def max_update_time(self):
+        return next(self.db.execute('SELECT COALESCE(MAX(update_time), 0) FROM che JOIN log USING (xml_sha256)'))[0]
 
     def list_handles(self, limit):
         assert limit >= 1
@@ -54,16 +60,20 @@ class DonorChe(object):
         logging.info('%s: got %s, %d bytes, content-length: %s, last-modified: %s, etag: %s',
                 self.name, DUMP_ZIP, os.path.getsize(zip_path), r.headers.get('content-length', '?'),
                 r.headers.get('last-modified', '?'), r.headers.get('etag', '?'))
-        with zipfile.ZipFile(zip_path, 'r') as zfd:
-            zfd.extract(DUMP_SIG, path=tmpdir)
-            zfd.extract(DUMP_XML, path=tmpdir)
         self.etag = r.headers['etag']
         self.last_modified = r.headers['last-modified']
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
         with self.db:
-            self.db.execute('UPDATE che SET etag = ?, last_modified = ?',
+            self.db.execute('UPDATE che SET etag = ?, last_modified = ?, xml_sha256 = NULL',
                 (self.etag, self.last_modified))
-        return file_sha256(os.path.join(tmpdir, DUMP_XML))
+        with zipfile.ZipFile(zip_path, 'r') as zfd:
+            zfd.extract(DUMP_SIG, path=tmpdir)
+            zfd.extract(DUMP_XML, path=tmpdir)
+            xml_binsha256 = file_sha256(os.path.join(tmpdir, DUMP_XML)) # calculated twice...
+        self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
+        with self.db:
+            self.db.execute('UPDATE che SET xml_sha256 = ?', (xml_binsha256,))
+        return xml_binsha256
 
     @staticmethod
     def sanity_cb(handle, xmlmeta, sigmeta, ut, utu):
