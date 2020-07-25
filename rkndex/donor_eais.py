@@ -27,6 +27,10 @@ class DonorEais(object):
             'User-Agent': GITAR_USER_AGENT,
         })
         self.write_token = write_token
+        self._update_freshness_limit()
+
+    def _update_freshness_limit(self):
+        self.freshness_limit = random.randint(86400 - 3600, 86400 + 3600)
 
     def create_table(self):
         self.db.execute('CREATE TABLE IF NOT EXISTS eais_fullsync_ts (time INTEGER NOT NULL)')
@@ -44,21 +48,26 @@ class DonorEais(object):
         it = self.db.execute('SELECT COUNT(*) FROM eais WHERE xml_sha256 = ?', (xml_binsha256,))
         return next(it)[0] == 0
 
-    def upload(self, zip_path):
+    def upload(self, zip_path, update_time):
         assert self.write_token is not None
         with open(zip_path, 'rb') as fd:
             r = self.s.post('https://{}/upload'.format(self.fqdn),
                 headers={'Authorization': 'Bearer {:s}'.format(self.write_token)},
                 files={'file': ('dump.zip', fd)})
             r.raise_for_status()
+        self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
+        with self.db:
+            since = int(update_time) - 1 # fix for `>` being used instead of `>=`
+            self._list_since(since, page_size=2)
 
+    # lists reports known to EAIS to download to local storage
     def list_handles(self, limit):
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
         with self.db:
-            day_size = random.randint(86400 - 3600, 86400 + 3600)
             now = int(time.time())
-            if self._fullsync_ts() + day_size < now:
+            if self._fullsync_ts() + self.freshness_limit < now:
                 self._list_full()
+                self._update_freshness_limit()
                 self.db.execute('UPDATE eais_fullsync_ts SET time = ?', (now, ))
             else:
                 self._list_since(self.max_update_time())
@@ -66,6 +75,17 @@ class DonorEais(object):
                 FROM eais WHERE xml_sha256 NOT IN (SELECT xml_sha256 FROM log) LIMIT ?''', (limit,))
             ret = list(it)
         return ret
+
+    # lists reports known to local storage to upload to EAIS
+    def get_uploadable(self):
+        if self.max_update_time() == 0: # does not make sense for an empty database
+            return None
+        it = self.db.execute('''SELECT update_time, xml_sha256, xml_git, xml_mtime, sig_git, sig_mtime
+            FROM log WHERE xml_sha256 NOT IN (SELECT xml_sha256 FROM eais) LIMIT 10''')
+        uploadable = list(it)
+        if not len(uploadable):
+            return None
+        return random.choice(uploadable)
 
     def max_update_time(self):
         return next(self.db.execute('SELECT COALESCE(MAX(update_time), 0) FROM eais'))[0]
@@ -79,11 +99,13 @@ class DonorEais(object):
         while maybe_more:
             since, maybe_more = self._list_since(since)
 
-    def _list_since(self, since):
+    def _list_since(self, since, page_size=None):
         # 4096 entries to get ~ 1 MiB of metadata per round-trip.  Number of
         # entries is randomized to avoid UNLIKELY case when two dumps have the same
         # timestamp and the timestamp falls at the boundary of the "page".
-        page_size = random.randint(4096 - 64, 4096 + 64)
+        if page_size is None:
+            page_size = random.randint(4096 - 64, 4096 + 64)
+        # Note, API lists files having (update_time > since), so it misses (update_time == since)!
         r = self.s.get('https://{}/start?ts={:d}&c={:d}'.format(self.fqdn, since, page_size), timeout=HTTP_TIMEOUT)
         r.raise_for_status()
         page = r.json()

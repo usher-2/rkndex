@@ -14,6 +14,7 @@
 # Code _hopes_ that mtime of dump.xml{,.sig} is preserved by unzip.
 
 import argparse
+import binascii
 import calendar
 import codecs
 import datetime
@@ -26,6 +27,7 @@ import re
 import sys
 import time
 import traceback
+import zipfile
 from contextlib import contextmanager
 from subprocess import run, check_call, check_output, Popen, PIPE
 from tempfile import TemporaryDirectory
@@ -38,6 +40,7 @@ from rkndex.donor_eais import DonorEais
 from rkndex.donor_zavod import DonorZavod
 from rkndex.gitarlog import GitarLog
 from rkndex.util import schedule_every
+from rkndex.popen import ScopedPopen
 
 GITAR_LATENCY = prom.Summary('gitar_duration_seconds', 'Step latency', ['step'])
 GITAR_EXCEPTIONS = prom.Counter('gitar_exceptions', 'Step exceptions', ['step'])
@@ -173,6 +176,9 @@ def git_blob_exists(githash):
         return False
     else:
         raise RuntimeError('`git cat-file -e` failure', githash, p)
+
+def git_cat_file(git_obj: bytes, stdout):
+    return ScopedPopen(['git', 'cat-file', 'blob', binascii.hexlify(git_obj)], stdout=stdout)
 
 # Non-zero minutes TZ are not tested, so `:00` match is hard-coded
 UPDATE_TIME_RE = re.compile(br'\bupdateTime="(?P<raw>(?P<year>\d{4})-(?P<mon>\d\d)-(?P<day>\d\d)T(?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d)\+(?P<tzh>\d\d):00)"')
@@ -322,14 +328,46 @@ def donors_loop(gitarlog, eais, donors):
                                 objects_repack()
                     if eais.needs_xml_sha256(xml_binsha256) and eais.write_token:
                         with counted_step('upload'):
-                            eais.upload(os.path.join(tmpdir, DUMP_ZIP))
-                        logging.info('eais: uploaded xml_sha256 %s, updateTime %s (%d)', xml_binsha256.hex(), ut_raw, ut_ts)
+                            eais.upload(os.path.join(tmpdir, DUMP_ZIP), ut_ts)
+                        logging.info('eais: uploaded xml_sha256 %s from %s, updateTime %s (%d)', xml_binsha256.hex(), don.name, ut_raw, ut_ts)
             except Exception:
                 traceback.print_exc(file=sys.stderr)
             sys.stderr.flush() # docker makes stderr buffered for some reason
         if isinstance(don, DonorEais): # maybe something fresh appeared after `todo`
+            try:
+                to_upload = don.get_uploadable()
+                if to_upload is not None:
+                    eais_upload_from_git(eais, *to_upload)
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush() # docker makes stderr buffered for some reason
             max_update_time[don.name] = max(max_update_time[don.name], don.max_update_time())
             GITAR_UPDATETIME.labels(don.name).set(max_update_time[don.name])
+
+def eais_upload_from_git(eais, ut_ts, xml_sha256, xml_git, xml_mtime, sig_git, sig_mtime):
+    with TemporaryDirectory() as tmpdir:
+        for (fname, git, mtime) in (
+            (DUMP_XML, xml_git, xml_mtime),
+            (DUMP_SIG, sig_git, sig_mtime),
+        ):
+            dest = os.path.join(tmpdir, fname)
+            with open(dest, 'w') as fd, git_cat_file(git, fd) as proc:
+                proc.wait()
+                if proc.returncode != 0:
+                    raise RuntimeError('')
+                os.utime(dest, (mtime, mtime))
+
+        ut_ts_xml, ut_raw, _, _ = update_time(os.path.join(tmpdir, DUMP_XML))
+        assert ut_ts_xml.timestamp() == ut_ts
+
+        zip_fname = os.path.join(tmpdir, DUMP_ZIP)
+        with zipfile.ZipFile(zip_fname, 'w', compression=zipfile.ZIP_DEFLATED) as fd:
+            fd.write(os.path.join(tmpdir, DUMP_XML), arcname=DUMP_XML)
+            fd.write(os.path.join(tmpdir, DUMP_SIG), arcname=DUMP_SIG)
+
+        with counted_step('upload'):
+            eais.upload(zip_fname, ut_ts)
+        logging.info('eais: uploaded xml_sha256 %s from git, updateTime %s (%d)', xml_sha256.hex(), ut_raw, ut_ts)
 
 def git_size(s):
     suffix = {
