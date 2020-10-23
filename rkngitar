@@ -118,9 +118,10 @@ def cms_signing_time(cms):
     return calendar.timegm((d['year'], d['mon'], d['day'], d['hour'], d['min'], d['sec']))
 
 SUBJECT_DN_RE = re.compile(br'^\s+subject: (?P<s_dn>.*)$', re.MULTILINE)
-CN_RE = re.compile(br'\bCN=(?P<cn>.+?)(?:$|, |/street=)') # ugly, but works for now
+CN_RE = re.compile(br'\bCN=(?P<cn>.+?)(?:$|, |/street=|/unstructuredName=)') # ugly, but works for now
 # SHA1 c574234078c05931b952c930c2163e32b2af8a66 dump.xml.sig mixes `, ` and `/`
 # as field separators in subject. That's a funny side-effect of `gost` module.
+# SHA1 5a0740d11aa04148c3bc3f9494cdabe0cf902561 dump.xml.sig introduces unstructuredName.
 
 def cms_subject_cn(cms):
     # Sorry, RFC2253 and RFC4514 are mostly ignored here.
