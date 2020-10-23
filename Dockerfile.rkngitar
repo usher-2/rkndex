@@ -13,9 +13,9 @@ RUN set -ex \
         python3-requests \
         wget \
     && pip3 install prometheus_client \
-    && wget -O /tmp/gost-ca.tar.gz https://github.com/schors/gost-russian-ca/archive/b28e7ddac3581140f9234050e0d1f55a6e3bbadc.tar.gz \
+    && wget -O /tmp/gost-ca.tar.gz https://github.com/schors/gost-russian-ca/archive/132804f9d4b9a8879c068d97d91c3f9debbc409d.tar.gz \
     && tar -x -C /tmp -f /tmp/gost-ca.tar.gz \
-    && mv /tmp/gost-russian-ca-b28e7ddac3581140f9234050e0d1f55a6e3bbadc/certs /opt/russian-certs \
+    && mv /tmp/gost-russian-ca-132804f9d4b9a8879c068d97d91c3f9debbc409d/certs /opt/russian-certs \
     && wget -P /tmp \
         http://certenroll.ca.rt.ru/ca_rtk.crt \
         http://certenroll.ca.rt.ru/ca_rtk2.crt \
