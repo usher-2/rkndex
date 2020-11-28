@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+#
+# Script to store similar versions of the evolving uncompressed file
+# rvzdata.json in git repo to utilize git delta-compression.
+
+import argparse
+import datetime
+import gzip
+import json
+import os
+import re
+from subprocess import check_call, check_output
+
+RVZ_EPOCH = 1506442860
+NAME = 'Phil Kulin'
+EMAIL = 'schors@usher2.club'
+NULL_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+
+def git_init():
+    if not os.path.exists(OPT.git_dir):
+        check_call(['git', 'init', '--bare', OPT.git_dir])
+        new = True
+    else:
+        new = False
+    os.environ['GIT_DIR'] = os.path.abspath(OPT.git_dir)
+    if new:
+        git_zero_ts = '{:d} +0000'.format(RVZ_EPOCH)
+        check_call(['git', 'config', 'user.name', NAME])
+        check_call(['git', 'config', 'user.email', EMAIL])
+        tree = check_output(['git', 'hash-object', '-t', 'tree', '/dev/null']).strip()
+        commit = check_output(['git', 'commit-tree', '-m', 'Initial commit', tree], env=dict(os.environ,
+            GIT_AUTHOR_DATE=git_zero_ts,
+            GIT_COMMITTER_DATE=git_zero_ts,
+        )).strip()
+        check_call(['git', 'update-ref', 'HEAD', commit])
+    os.environ['GIT_COMMITTER_NAME'] = NAME
+    os.environ['GIT_COMMITTER_EMAIL'] = EMAIL
+    os.environ['GIT_AUTHOR_NAME'] = NAME
+    os.environ['GIT_AUTHOR_EMAIL'] = EMAIL
+
+UTC_TZ = datetime.timezone(datetime.timedelta(0))
+
+def isoformat(unix_ts):
+    return datetime.datetime.fromtimestamp(unix_ts, UTC_TZ).isoformat()
+
+def commit_file(rvzdata_gz):
+    basename = os.path.basename(rvzdata_gz)
+    assert basename.endswith('.gz')
+    basename_ts = int(basename[:-3])
+    mtime_ts = int(os.path.getmtime(rvzdata_gz))
+
+    with gzip.open(rvzdata_gz) as fd:
+        doc = json.loads(fd.read().decode('utf-8'))
+    # get metadata
+    resolve_ts = doc.get('t') or 0
+    updateTime = doc.get('h', {}).get('ut') or 0
+    updateTimeUrgently = doc.get('h', {}).get('utu') or 0
+    xml_sha256 = doc.get('h', {}).get('id') or NULL_SHA256
+    # Reorder lists to maximize compression. `[::-1]` gives extra 10% of compression ratio!
+    doc['list'].sort(key=lambda _: _['d'][::-1]) # get static order by `ten.elpmaxe.www`
+    for domain_obj in doc['list']:
+        for key in ('ip4', 'ip6', 'c'):
+            if key in domain_obj:
+                domain_obj[key].sort()
+    # serialize `doc` to bytes
+    doc = json.dumps(doc, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+
+    # git-commit
+    blob = check_output(['git', 'hash-object', '-w', '--stdin'], input=doc).strip().decode('ascii')
+    assert len(blob) == 40, blob
+    del doc # ≈30 MiB of RAM might be useful :)
+
+    check_call(['git', 'read-tree', '--empty'])
+    check_call(['git', 'update-index', '--add',
+         '--cacheinfo', '100644,{:s},rvzdata.json'.format(blob),
+    ])
+    tree = check_output(['git', 'write-tree']).strip().decode('ascii')
+
+    # gzip-level `mtime` is not usually filled in these files,
+    # so this bit of metadata is not preserved in the commit message.
+    body = '\n'.join([
+        '{:s}'.format(basename),
+        '',
+        '{:s} {:d} basename'.format(isoformat(basename_ts), basename_ts),
+        '{:s} {:d} rvzdata.gz mtime'.format(isoformat(mtime_ts), mtime_ts),
+        '{:s} {:d} resolveTime'.format(isoformat(resolve_ts), resolve_ts),
+        '{:s} {:d} updateTime'.format(isoformat(updateTime), updateTime),
+        '{:s} {:d} updateTimeUrgently'.format(isoformat(updateTimeUrgently), updateTimeUrgently),
+        'GIT {:s} rvzdata.json'.format(blob),
+        'SHA256 {:s} dump.xml'.format(xml_sha256),
+    ]).encode('utf-8')
+    head = check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
+    git_ts = '{:d} +0000'.format(basename_ts)
+    commit = check_output(['git', 'commit-tree', '-p', head, tree], input=body, env=dict(os.environ,
+            GIT_COMMITTER_DATE=git_ts,
+            GIT_AUTHOR_DATE=git_ts)).strip().decode('ascii')
+    check_call(['git', 'update-ref', 'HEAD', commit])
+
+GIT_OBJDIR_RE = re.compile(r'[0-9a-fA-F]{2}')
+
+def objects_heap_size():
+    sz = 0
+    # enumerating unpacked (or loose) objects
+    objdir = os.path.join(OPT.git_dir, 'objects')
+    for hh in filter(GIT_OBJDIR_RE.fullmatch, os.listdir(objdir)):
+        hhdir = os.path.join(objdir, hh)
+        for ff in os.listdir(hhdir):
+            sz += os.path.getsize(os.path.join(hhdir, ff))
+    return sz
+
+def objects_repack():
+    # incremental pack, `git gc` will do full-pack probably...
+    check_call(['git', 'repack', '--window-memory={}'.format(OPT.window_memory)])
+    check_call(['git', 'prune-packed'])
+
+def git_size(s):
+    suffix = {
+        'k': 1024,
+        'm': 1024 * 1024,
+        'g': 1024 * 1024 * 1024,
+    }
+    return int(s[:-1]) * suffix[s[-1]] if s.endswith(tuple(suffix.keys())) else int(s)
+
+def existing_file(s):
+    assert os.path.exists(s), s
+    return s
+
+def parse_args():
+    p = argparse.ArgumentParser(description='Import files to local git archive')
+    p.add_argument('--git-dir', help='Git repo directory', metavar='DIR', required=True)
+    p.add_argument('--objects-xmx', help='Git/objects max size to start git-repack', metavar='SIZE', type=git_size, default='5g')
+    p.add_argument('--window-memory', help='Window size for git delta compression', metavar='SIZE', type=git_size, default='384m')
+    p.add_argument('files', nargs='+', type=existing_file, help='Files to add')
+    return p.parse_args()
+
+def main():
+    global OPT
+    OPT = parse_args()
+    git_init()
+    for fname in OPT.files:
+        commit_file(fname)
+        if OPT.objects_xmx < objects_heap_size():
+            objects_repack()
+
+if __name__ == '__main__':
+    main()
