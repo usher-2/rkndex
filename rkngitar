@@ -381,7 +381,7 @@ def git_size(s):
 def parse_args():
     p = argparse.ArgumentParser(description='Importer from EAIS to local git archive')
     p.add_argument('--git-dir', help='Git repo directory', metavar='DIR', required=True)
-    p.add_argument('--objects-xmx', help='Git/objects max size to start repack', metavar='SIZE', type=git_size, default='5g')
+    p.add_argument('--objects-xmx', help='Git/objects max size to start git-repack', metavar='SIZE', type=git_size, default='5g')
     p.add_argument('--window-memory', help='Window size for git delta compression', metavar='SIZE', type=git_size, default='384m')
     p.add_argument('--eais-fqdn', help='EAIS service FQDN', metavar='FQDN', required=True)
     p.add_argument('--eais-token', help='EAIS token file', metavar='FILE', required=True)
