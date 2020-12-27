@@ -26,7 +26,7 @@ class Sha1Converter(werkzeug.routing.BaseConverter):
     def to_python(self, value):
         return binascii.unhexlify(value)
     def to_url(self, value):
-        return binascii.hexlify(value)
+        return binascii.hexlify(value).decode('ascii')
 
 class GitarLogColumns(werkzeug.routing.BaseConverter):
     # Unreserved characters besides alnum are [-._~] per

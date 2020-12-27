@@ -20,6 +20,8 @@
 all :
 	: wut wut
 
+RKN_GIT := $$PWD/rkn.git
+
 -include local.mk
 
 # `tar` is used to avoid adding huge $PWD to context
@@ -58,7 +60,7 @@ run-dexer :
 	    darkk/rkn:dexer
 run-gitar :
 	docker run --rm -ti --net=host \
-	    -v $$PWD/rkn.git:/srv/rkn.git \
+	    -v $(RKN_GIT):/srv/rkn.git \
 	    darkk/rkn:gitar \
 	    --git-dir /srv/rkn.git \
 	    --eais-fqdn example.org --eais-token /dev/null \
@@ -68,7 +70,7 @@ run-giweb :
 	docker run --rm -ti --net=host \
 	    -e RKNDEX_GIWEB_GITAR_DIR=/srv/rkn.git \
 	    -e RKNDEX_GIWEB_SETTINGS=/dev/null \
-	    -v $$PWD/rkn.git:/srv/rkn.git:ro \
+	    -v $(RKN_GIT):/srv/rkn.git:ro \
 	    darkk/rkn:giweb \
 	    gunicorn --bind 127.0.0.1:12283 rkndex.giweb:app
 run-pg :
