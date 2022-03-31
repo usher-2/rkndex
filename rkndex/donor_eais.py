@@ -42,11 +42,16 @@ class DonorEais(object):
             xml_size                INTEGER,
             xml_mtime               INTEGER,
             xml_sha256              BLOB UNIQUE NOT NULL)''')
+        self.db.execute('''CREATE TABLE IF NOT EXISTS eais_deleted (
+            xml_sha256              BLOB UNIQUE NOT NULL)''')
 
     def needs_xml_sha256(self, xml_binsha256):
         assert self._fullsync_ts() > 0 and len(xml_binsha256) == 32
         it = self.db.execute('SELECT COUNT(*) FROM eais WHERE xml_sha256 = ?', (xml_binsha256,))
-        return next(it)[0] == 0
+        count_eais = next(it)[0]
+        it = self.db.execute('SELECT COUNT(*) FROM eais_deleted WHERE xml_sha256 = ?', (xml_binsha256,))
+        count_deleted = next(it)[0]
+        return count_eais == 0 and count_deleted == 0
 
     def upload(self, zip_path, update_time):
         assert self.write_token is not None
@@ -81,7 +86,9 @@ class DonorEais(object):
         if self.max_update_time() == 0: # does not make sense for an empty database
             return None
         it = self.db.execute('''SELECT update_time, xml_sha256, xml_git, xml_mtime, sig_git, sig_mtime
-            FROM log WHERE xml_sha256 NOT IN (SELECT xml_sha256 FROM eais) LIMIT 10''')
+            FROM log WHERE xml_sha256 NOT IN (SELECT xml_sha256 FROM eais)
+                       AND xml_sha256 NOT IN (SELECT xml_sha256 FROM eais_deleted)
+            LIMIT 10''')
         uploadable = list(it)
         if not len(uploadable):
             return None
