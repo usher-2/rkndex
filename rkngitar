@@ -217,8 +217,17 @@ def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
     cms = check_output(['openssl', 'cms', '-inform', 'DER', '-in', dump_xml_sig, '-cmsout', '-print'])
     signing_ts = cms_signing_time(cms)
     subject_cn = cms_subject_cn(cms)
+    verify_opts = []
+    if b' serialNumber: 0x63002A0E7BFC2B588B0959E779BAE786CF9DA227\n' in cms:
+        # The certificate with `notBefore: Jan 13 08:42:23 2022 GMT` seems to have bad `purpose` flags:
+        #   $ openssl smime -verify -engine gost -CApath /opt/russian-certs/ -in dump.xml.sig -inform DER -content dump.xml -out /dev/null
+        #   engine "gost" set.
+        #   Verification failure
+        #   140339815653824:error:21075075:PKCS7 routines:PKCS7_verify:certificate verify error:../crypto/pkcs7/pk7_smime.c:285:Verify error:unsupported certificate purpose
+        # `-purpose smimesign` does not work as well. So, here is an ugly hack for that specific certificate:
+        verify_opts = ['-purpose', 'sslserver']
     verify = Popen(['openssl', 'smime', '-verify', '-engine', 'gost', '-CApath', OPT.capath, '-attime', str(signing_ts),
-                    '-in', dump_xml_sig, '-inform', 'DER', '-content', dump_xml, '-out', '/dev/null'], stderr=PIPE)
+                    '-in', dump_xml_sig, '-inform', 'DER', '-content', dump_xml, '-out', '/dev/null'] + verify_opts, stderr=PIPE)
     # do hashing and sig-check in parallel
     sigmeta = file_metadata(dump_xml_sig)
     xmlmeta = file_metadata(dump_xml)
