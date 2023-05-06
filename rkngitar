@@ -46,6 +46,7 @@ GITAR_LATENCY = prom.Summary('gitar_duration_seconds', 'Step latency', ['step'])
 GITAR_EXCEPTIONS = prom.Counter('gitar_exceptions', 'Step exceptions', ['step'])
 GITAR_UPDATETIME = prom.Gauge('gitar_update_time', 'XML updateTime', ['src'])
 HEAP_BYTES = prom.Gauge('gitar_heap_bytes', 'Non-packed .git/objects/?? size')
+MISORDERED_COMMITS = prom.Gauge('gitar_misordered_commits_count', 'Number of commits to reorder')
 for step in ('todo', 'fetch', 'store', 'upload', 'du', 'repack'):
     GITAR_LATENCY.labels(step)
     GITAR_EXCEPTIONS.labels(step)
@@ -278,12 +279,15 @@ def commit_files(dump_xml, dump_xml_sig, sanity_cb=None):
     body = '\n'.join(body).encode('utf-8')
     # do the commit, `git-commit` needs working tree, so it's not used
     head = check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
+    prev_ts = int(check_output(['git', 'log', '-1', '--pretty=format:%at', 'HEAD']).strip().decode('ascii'))
     git_ts = '{:d} +{:02.0f}00'.format(signing_ts, ut.tzinfo.utcoffset(None).seconds / 3600)
     commit = check_output(['git', 'commit-tree', '-p', head, tree], input=body, env=dict(os.environ,
             GIT_AUTHOR_NAME=subject_cn.encode('utf-8'),
             GIT_COMMITTER_DATE=git_ts,
             GIT_AUTHOR_DATE=git_ts)).strip().decode('ascii')
     check_call(['git', 'update-ref', 'HEAD', commit])
+    if prev_ts > signing_ts:
+        MISORDERED_COMMITS.inc()
 
 GIT_OBJDIR_RE = re.compile(r'[0-9a-fA-F]{2}')
 
@@ -301,6 +305,16 @@ def objects_repack():
     # incremental pack, `git gc` will do full-pack probably...
     check_call(['git', 'repack', '--window-memory={}'.format(OPT.window_memory)])
     check_call(['git', 'prune-packed'])
+
+def git_count_misordered():
+    ts_list = [int(s) for s in check_output(['git', 'log', '--pretty=format:%at']).strip().decode('ascii').split()]
+    misordered = 0
+    last = float('+inf')
+    for ts in ts_list:
+        if ts > last:
+            misordered += 1
+        last = ts
+    return misordered
 
 def donors_loop(gitarlog, eais, donors):
     max_update_time = {don.name: float('-inf') for don in donors}
@@ -410,6 +424,7 @@ def main():
     git_init()
     with counted_step('du'):
         HEAP_BYTES.set(objects_heap_size())
+    MISORDERED_COMMITS.set(git_count_misordered())
     gitarlog = GitarLog(OPT.git_dir, os.path.join(OPT.git_dir, 'rkngitar.sqlite'))
 
     with open(OPT.eais_token) as fd:
