@@ -52,8 +52,8 @@ for step in ('todo', 'fetch', 'store', 'upload', 'du', 'repack'):
 
 OPT = None # CLI options
 
-NAME = 'John Doe'
-EMAIL = 'noreply@example.net'
+NAME = 'Eero Vitra'
+EMAIL = 'eero.virta@proton.me'
 RKN_EMAIL = 'noreply@rkn.gov.ru' # git needs email, but dump.xml.sig has no emails :-(
 
 # Decorator is not used as @H.labels('foo').time() bar is SyntaxError, see following:
