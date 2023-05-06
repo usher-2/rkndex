@@ -1,6 +1,19 @@
 # Both debian:buster-slim and ubuntu:18.04 work
 FROM ubuntu:18.04
 
+# schors/gost-russian-ca bundle is not sufficient to verify all the available
+# dumps.  These files are downloaded from http://certenroll.ca.rt.ru/
+# That web endpoint is down as of 06-May-2023 so the files are bundled.
+COPY \
+    certenroll.ca.rt.ru/ca_rtk.crt \
+    certenroll.ca.rt.ru/ca_rtk2.crt \
+    certenroll.ca.rt.ru/ca_rtk3.crt \
+    certenroll.ca.rt.ru/ca_rtk4.crt \
+    certenroll.ca.rt.ru/ca_rtk5.crt \
+    certenroll.ca.rt.ru/ca_rtk6.crt \
+    certenroll.ca.rt.ru/ca_rtk_gost2012.crt \
+    /tmp/
+
 RUN set -ex \
     && sed -i s,http://archive.ubuntu.com/ubuntu/,mirror://mirrors.ubuntu.com/mirrors.txt, /etc/apt/sources.list \
     && apt-get update \
@@ -16,14 +29,6 @@ RUN set -ex \
     && wget -O /tmp/gost-ca.tar.gz https://github.com/schors/gost-russian-ca/archive/67c5d515e8346772038a7be0e90429b3ad69ac84.tar.gz \
     && tar -x -C /tmp -f /tmp/gost-ca.tar.gz \
     && mv /tmp/gost-russian-ca-67c5d515e8346772038a7be0e90429b3ad69ac84/certs /opt/russian-certs \
-    && wget -P /tmp \
-        http://certenroll.ca.rt.ru/ca_rtk.crt \
-        http://certenroll.ca.rt.ru/ca_rtk2.crt \
-        http://certenroll.ca.rt.ru/ca_rtk3.crt \
-        http://certenroll.ca.rt.ru/ca_rtk4.crt \
-        http://certenroll.ca.rt.ru/ca_rtk5.crt \
-        http://certenroll.ca.rt.ru/ca_rtk6.crt \
-        http://certenroll.ca.rt.ru/ca_rtk_gost2012.crt \
     && for f in '' 2 4 5 6 _gost2012; do openssl x509 -inform DER -outform PEM -in /tmp/ca_rtk${f}.crt >/opt/russian-certs/ca_rtk${f}.crt; done \
     && cp /tmp/ca_rtk3.crt /opt/russian-certs/ \
     && c_rehash /opt/russian-certs \
