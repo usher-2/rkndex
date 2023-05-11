@@ -3,9 +3,7 @@
 # Monitoring vitals of https://usher2.club charts.
 
 import argparse
-import itertools
 import os
-import time
 
 import dateutil.parser
 import prometheus_client as prom # https://github.com/prometheus/client_python
@@ -18,6 +16,7 @@ U2_EXC = prom.Counter('usher2_exceptions', 'Count handle_slug exceptions')
 U2_REQS = prom.Counter('usher2_requests', 'HTTP status codes', ['handler', 'code'])
 U2_LATENCY = prom.Summary('usher2_request_duration_seconds', 'usher2.club latency')
 U2_LASTMOD = prom.Gauge('usher2_last_modified_time', 'Last-Modified header', ['handler'])
+U2_PUSHED_AT = prom.Gauge('usher2_pushed_time', 'pushed_at for GitHub repo', ['repo'])
 U2_UPDATETIME = prom.Gauge('usher2_update_time', 'XML updateTime', ['handler'])
 
 @U2_EXC.count_exceptions()
@@ -46,6 +45,32 @@ def handle_slug(slug, sess, timeout, etag, lastmod):
         U2_UPDATETIME.labels(slug).set(update_time)
     return h_etag, h_lastmod
 
+@U2_EXC.count_exceptions()
+def handle_github(sess, timeout, etag, lastmod):
+    with U2_LATENCY.time():
+        r = sess.get('https://api.github.com/orgs/fz139/repos', timeout=timeout, headers={
+            'If-None-Match': etag,
+            'If-Modified-Since': lastmod,
+        })
+    h_etag, h_lastmod = None, None
+    if r.status_code == requests.codes.ok:
+        if 'etag' in r.headers:
+            h_etag = r.headers['etag']
+        if 'last-modified' in r.headers:
+            last_modified = h_lastmod = r.headers['last-modified']
+        else:
+            last_modified = LAST_MODIFIED_EPOCH
+        # NB: dateutil.parser is more relaxed parser than RFC1123 / RFC2616
+        last_modified = dateutil.parser.parse(last_modified).timestamp()
+        U2_LASTMOD.labels('github-repos').set(last_modified)
+
+        doc = r.json()
+        for repo in doc:
+            if repo['name'] in ('free-blocked-domains', 'blocked-domains-resolves', 'vigruzki'):
+                pushed_at = dateutil.parser.parse(repo['pushed_at']).timestamp()
+                U2_PUSHED_AT.labels(repo['name']).set(pushed_at)
+    return h_etag, h_lastmod
+
 def parse_args():
     p = argparse.ArgumentParser(description='usher2.club/*.json vitals prometheus exporter')
     p.add_argument('--prom-addr', help='Prometheus exporter bind IP', metavar='IP', default='127.0.0.1')
@@ -60,7 +85,7 @@ def main():
         sess.headers.update({
             'User-Agent': 'usher2_exporter/0.0; https://darkk.net.ru/',
         })
-        known_slugs = ('d1_ipblock', 'd15_ipblock', 'd1_uniq_ip4')
+        known_slugs = ('d1_ipblock', 'd15_ipblock', 'd1_uniq_ip4', 'github-repos')
 
         etag = {s: '"{}"'.format(os.urandom(16).hex()) for s in known_slugs}
         lastmod = {s: LAST_MODIFIED_EPOCH for s in known_slugs}
@@ -69,7 +94,10 @@ def main():
         req_timeout = max(inter_req_delay, 2.0)
         for slug in schedule_every(known_slugs, inter_req_delay):
             try:
-                h_etag, h_lastmod = handle_slug(slug, sess, req_timeout, etag[slug], lastmod[slug])
+                if slug == 'github-repos':
+                    h_etag, h_lastmod = handle_github(sess, req_timeout, etag[slug], lastmod[slug])
+                else:
+                    h_etag, h_lastmod = handle_slug(slug, sess, req_timeout, etag[slug], lastmod[slug])
                 if h_etag:
                     etag[slug] = h_etag
                 if h_lastmod:
