@@ -15,6 +15,11 @@ DONOR_POLL_PERIOD = 60
 LAST_MODIFIED_EPOCH = 'Thu, 01 Jan 1970 00:00:00 GMT'
 HTTP_TIMEOUT = 15.5
 
+BRANCH_100 = 'refs/heads/main-100m'
+REMOTE_100 = 'refs/remotes/gh/main'
+GH_REF_100 = 'main'
+GH_BLOB_LIMIT = 100 * 1024 * 1024 # GitHub max file size
+
 DUMP_ZIP = 'dump.zip'
 DUMP_XML = 'dump.xml'
 DUMP_SIG = 'dump.xml.sig'

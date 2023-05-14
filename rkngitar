@@ -28,13 +28,15 @@ import sys
 import time
 import traceback
 import zipfile
+from collections import namedtuple
 from contextlib import contextmanager
+from glob import glob
 from subprocess import run, check_call, check_output, Popen, PIPE
 from tempfile import TemporaryDirectory
 
 import prometheus_client as prom # https://github.com/prometheus/client_python
 
-from rkndex.const import RKN_EPOCH, ZERO_GIT, ZERO_XML, DUMP_XML, DUMP_SIG, DUMP_ZIP
+from rkndex.const import RKN_EPOCH, ZERO_GIT, ZERO_XML, DUMP_XML, DUMP_SIG, DUMP_ZIP, BRANCH_100, REMOTE_100, GH_REF_100, GH_BLOB_LIMIT
 from rkndex.donor_che import DonorChe
 from rkndex.donor_eais import DonorEais
 from rkndex.donor_zavod import DonorZavod
@@ -47,7 +49,7 @@ GITAR_EXCEPTIONS = prom.Counter('gitar_exceptions', 'Step exceptions', ['step'])
 GITAR_UPDATETIME = prom.Gauge('gitar_update_time', 'XML updateTime', ['src'])
 HEAP_BYTES = prom.Gauge('gitar_heap_bytes', 'Non-packed .git/objects/?? size')
 MISORDERED_COMMITS = prom.Gauge('gitar_misordered_commits_count', 'Number of commits to reorder')
-for step in ('todo', 'fetch', 'store', 'upload', 'du', 'repack'):
+for step in ('todo', 'fetch', 'store', 'upload', 'du', 'repack', 'github', 'github-store', 'github-push'):
     GITAR_LATENCY.labels(step)
     GITAR_EXCEPTIONS.labels(step)
 
@@ -306,6 +308,14 @@ def objects_repack():
     check_call(['git', 'repack', '--window-memory={}'.format(OPT.window_memory)])
     check_call(['git', 'prune-packed'])
 
+def objects_maybe_repack():
+    with counted_step('du'):
+        sz = objects_heap_size()
+        HEAP_BYTES.set(sz)
+    if OPT.objects_xmx < sz:
+        with counted_step('repack'):
+            objects_repack()
+
 def git_count_misordered():
     ts_list = [int(s) for s in check_output(['git', 'log', '--pretty=format:%at']).strip().decode('ascii').split()]
     misordered = 0
@@ -344,12 +354,7 @@ def donors_loop(gitarlog, eais, donors):
                             gitarlog.poll_fs()
                             GITAR_UPDATETIME.labels('local').set(gitarlog.max_update_time())
                         logging.info('local: stored xml_sha256 %s, updateTime %s (%d)', xml_binsha256.hex(), ut_raw, ut_ts)
-                        with counted_step('du'):
-                            sz = objects_heap_size()
-                            HEAP_BYTES.set(sz)
-                        if OPT.objects_xmx < sz:
-                            with counted_step('repack'):
-                                objects_repack()
+                        objects_maybe_repack()
                     if eais.needs_xml_sha256(xml_binsha256) and eais.write_token:
                         with counted_step('upload'):
                             eais.upload(os.path.join(tmpdir, DUMP_ZIP), ut_ts)
@@ -367,6 +372,98 @@ def donors_loop(gitarlog, eais, donors):
             sys.stderr.flush() # docker makes stderr buffered for some reason
             max_update_time[don.name] = max(max_update_time[don.name], don.max_update_time())
             GITAR_UPDATETIME.labels(don.name).set(max_update_time[don.name])
+            try:
+                with counted_step('github'):
+                    github_loop(gitarlog)
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+
+def github_loop(gitarlog):
+    it = gitarlog.db.execute('SELECT signing_time FROM log WHERE signing_time NOT IN (SELECT signing_time FROM log100)')
+    missing = {_[0] for _ in it}
+    if not missing:
+        return
+    todo = []
+    log = check_output(['git', 'log', '--since=@{:d}'.format(min(missing)), '--pretty=format:%at %H %T']).strip().decode('ascii').split('\n')
+    for line in log:
+        author_ts, commit, tree = line.split(' ')
+        author_ts = int(author_ts)
+        if author_ts in missing:
+            todo.append((author_ts, commit, tree))
+    assert len(todo) == len(missing)
+    todo.sort()
+    start = time.time()
+    for author_ts, commit, tree in todo:
+        with counted_step('github-store'):
+            git_commit_100(commit, tree)
+            gitarlog.poll_fs()
+        if start + 300 < time.time(): # limit time for a single batch
+            break
+    objects_maybe_repack()
+    github_maybe_push()
+
+def github_maybe_push():
+    local = check_output(['git', 'rev-parse', BRANCH_100]).strip().decode('ascii')
+    remote = check_output(['git', 'rev-parse', REMOTE_100]).strip().decode('ascii')
+    if local != remote:
+        with counted_step('github-push'):
+            check_call(['git', 'push', 'gh', '{}:{}'.format(BRANCH_100, GH_REF_100)])
+
+GitLsEntry = namedtuple('GitLsEntry', ['mode', 'type', 'hash', 'size', 'name'])
+
+def git_ls_tree(tree):
+    ls = []
+    for line in check_output(['git', 'ls-tree', '-l', tree]).strip().split(b'\n'):
+        meta, name = line.strip().split(b'\t')
+        mode, objtype, objhash, size = meta.decode('ascii').split()
+        size = int(size)
+        ls.append(GitLsEntry(mode, objtype, objhash, size, name.decode('ascii')))
+    return ls
+
+def git_commit_100(commit, tree):
+    prev_commit = check_output(['git', 'rev-parse', BRANCH_100]).strip().decode('ascii')
+    tree_ls = git_ls_tree(tree)
+    xml_ls = [f for f in tree_ls if f.name == 'dump.xml' and f.type == 'blob'][0]
+    new_tree, xml_commit_text = None, ''
+    if xml_ls.size > GH_BLOB_LIMIT:
+        # split & build new tree
+        with TemporaryDirectory() as tmpdir:
+            xml_fname = os.path.join(tmpdir, 'dump.xml')
+            with open(xml_fname, 'wb') as fd:
+                check_call(['git', 'cat-file', 'blob', xml_ls.hash], stdout=fd)
+            assert os.path.getsize(xml_fname) == xml_ls.size
+            # it's easier to call CLI tool than write 100% correct and lean code for chunk size =100M
+            xml_chunk_prefix = os.path.join(tmpdir, 'dump.xml.')
+            check_call(['split', '--suffix-length=2', '--numeric-suffixes', '--bytes={}'.format(GH_BLOB_LIMIT), xml_fname, xml_chunk_prefix])
+            chunks = glob(xml_chunk_prefix + '??')
+            assert sum(os.path.getsize(f) for f in chunks) == xml_ls.size
+            chunk_blobs = check_output(['git', 'hash-object', '-w', '--', *chunks]).strip().decode('ascii').split()
+
+            index_update = []
+            for f in tree_ls:
+                if not (f.name == 'dump.xml' and f.type == 'blob'):
+                    index_update.append('--cacheinfo')
+                    index_update.append('{:s},{:s},{:s}'.format(f.mode, f.hash, f.name))
+            for fname, objhash in sorted(zip(chunks, chunk_blobs)):
+                basename = os.path.basename(fname)
+                index_update.append('--cacheinfo')
+                index_update.append('{:s},{:s},{:s}'.format(xml_ls.mode, objhash, basename))
+                xml_commit_text += 'GIT {} {}\n'.format(objhash, basename)
+
+            check_call(['git', 'read-tree', '--empty'])
+            check_call(['git', 'update-index', '--add', *index_update])
+            new_tree = check_output(['git', 'write-tree']).strip().decode('ascii')
+
+    new = check_output(['git', 'cat-file', 'commit', commit])
+    new = re.sub(b'^parent [0-9a-f]{40}$', 'parent {}'.format(prev_commit).encode('ascii'), new, flags=re.MULTILINE)
+    if new_tree:
+        new = re.sub(b'^tree [0-9a-f]{40}$', 'tree {}'.format(new_tree).encode('ascii'), new, flags=re.MULTILINE)
+    if xml_commit_text:
+        new = re.sub(b'^GIT [0-9a-f]{40} dump.xml$', xml_commit_text.rstrip('\n').encode('ascii'), new, flags=re.MULTILINE)
+
+    new_commit_obj = check_output(['git', 'hash-object', '-t', 'commit', '-w', '--stdin'], input=new).decode('ascii').strip()
+    check_call(['git', 'update-ref', BRANCH_100, new_commit_obj])
 
 def eais_upload_from_git(eais, ut_ts, xml_sha256, xml_git, xml_mtime, sig_git, sig_mtime):
     with TemporaryDirectory() as tmpdir:

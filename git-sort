@@ -13,8 +13,8 @@ def check_run(*args, **kwargs):
     return subprocess.run(*args, check=True, **kwargs)
 
 def main():
-    out_ref = sys.argv[1]
-    log = check_run(['git', 'log', '--reverse', '--pretty=format:%at %H %P'], stdout=PIPE)
+    in_ref, out_ref = sys.argv[1:]
+    log = check_run(['git', 'log', '--reverse', '--pretty=format:%at %H %P', in_ref], stdout=PIPE)
     todo = []
     root = None
     for line in log.stdout.split(b'\n'):

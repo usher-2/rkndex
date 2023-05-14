@@ -1,0 +1,127 @@
+#!/usr/bin/python3
+
+# Script to split large dump.xml from branch `main` to dump.xml.XX in branch `main-100m`.
+
+import os
+import re
+from collections import namedtuple
+from glob import glob
+from subprocess import check_call, check_output
+from tempfile import TemporaryDirectory
+from time import time
+
+import progressbar # python3-progressbar=2.3-4 from debian:buster
+
+LIMIT = 100 * 1024 * 1024 # GitHub max file size
+
+GitLsEntry = namedtuple('GitLsEntry', ['mode', 'type', 'hash', 'size', 'name'])
+
+def git_ls_tree(tree):
+    ls = []
+    for line in check_output(['git', 'ls-tree', '-l', tree]).strip().split(b'\n'):
+        meta, name = line.strip().split(b'\t')
+        mode, objtype, objhash, size = meta.decode('ascii').split()
+        size = int(size)
+        ls.append(GitLsEntry(mode, objtype, objhash, size, name.decode('ascii')))
+    return ls
+
+GIT_OBJDIR_RE = re.compile(r'[0-9a-fA-F]{2}')
+
+def objects_heap_size():
+    sz = 0
+    # enumerating unpacked (or loose) objects
+    objdir = os.path.join('.', 'objects')
+    for hh in filter(GIT_OBJDIR_RE.fullmatch, os.listdir(objdir)):
+        hhdir = os.path.join(objdir, hh)
+        for ff in os.listdir(hhdir):
+            sz += os.path.getsize(os.path.join(hhdir, ff))
+    return sz
+
+def objects_repack():
+    # incremental pack, `git gc` will do full-pack probably...
+    check_call(['git', 'repack', '--window-memory=384m'])
+    check_call(['git', 'prune-packed'])
+
+def main():
+    start = time()
+    src, dst = 'refs/heads/main', 'refs/heads/main-100m'
+
+    diverged_done = {
+        int(ts) for ts in
+        check_output(
+            ['git', 'log', '--pretty=format:%at', '{}..{}'.format(src, dst)]
+        ).decode('ascii').strip().split()
+    }
+
+    potential = check_output(
+        ['git', 'log', '--pretty=format:%at %H %T', '{}..{}'.format(dst, src)]
+    )
+    todo = []
+    for line in potential.split(b'\n'):
+        author_ts, commit, tree = line.split(b' ')
+        author_ts = int(author_ts)
+        if author_ts not in diverged_done:
+            todo.append((author_ts, commit, tree))
+    assert len(todo) == len({_[0] for _ in todo}) # ensure there are no duplicate author_ts
+    todo.sort()
+    del potential
+    del diverged_done
+
+    prev_commit = check_output(['git', 'rev-parse', dst]).strip().decode('ascii')
+
+    pb = progressbar.ProgressBar(widgets=[progressbar.Counter(), '/{:d} commited, '.format(len(todo)), progressbar.ETA(), progressbar.Bar()])
+    done = 0
+    for _, commit, tree in (pb(todo) if todo else ()):
+        tree_ls = git_ls_tree(tree)
+        xml_ls = [f for f in tree_ls if f.name == 'dump.xml' and f.type == 'blob'][0]
+        xml_commit_text = ''
+        if xml_ls.size > LIMIT:
+            # split & build new tree
+            with TemporaryDirectory() as tmpdir:
+                xml_fname = os.path.join(tmpdir, 'dump.xml')
+                with open(xml_fname, 'wb') as fd:
+                    check_call(['git', 'cat-file', 'blob', xml_ls.hash], stdout=fd)
+                assert os.path.getsize(xml_fname) == xml_ls.size
+                # it's easier to call CLI tool than write 100% correct and lean code for chunk size =100M
+                xml_chunk_prefix = os.path.join(tmpdir, 'dump.xml.')
+                check_call(['split', '--suffix-length=2', '--numeric-suffixes', '--bytes={}'.format(LIMIT), xml_fname, xml_chunk_prefix])
+                chunks = glob(xml_chunk_prefix + '??')
+                assert sum(os.path.getsize(f) for f in chunks) == xml_ls.size
+                chunk_blobs = check_output(['git', 'hash-object', '-w', '--', *chunks]).strip().decode('ascii').split()
+
+                index_update = []
+                for f in tree_ls:
+                    if not (f.name == 'dump.xml' and f.type == 'blob'):
+                        index_update.append('--cacheinfo')
+                        index_update.append('{:s},{:s},{:s}'.format(f.mode, f.hash, f.name))
+                for fname, objhash in sorted(zip(chunks, chunk_blobs)):
+                    basename = os.path.basename(fname)
+                    index_update.append('--cacheinfo')
+                    index_update.append('{:s},{:s},{:s}'.format(xml_ls.mode, objhash, basename))
+                    xml_commit_text += 'GIT {} {}\n'.format(objhash, basename)
+
+                check_call(['git', 'read-tree', '--empty'])
+                check_call(['git', 'update-index', '--add', *index_update])
+                new_tree = check_output(['git', 'write-tree']).strip().decode('ascii')
+        else:
+            new_tree = tree.decode('ascii')
+
+        commit_obj = check_output(['git', 'cat-file', 'commit', commit])
+        new = commit_obj
+        new = re.sub(b'^tree [0-9a-f]{40}$', 'tree {}'.format(new_tree).encode('ascii'), new, flags=re.MULTILINE)
+        new = re.sub(b'^parent [0-9a-f]{40}$', 'parent {}'.format(prev_commit).encode('ascii'), new, flags=re.MULTILINE)
+        new = re.sub(b'^GIT [0-9a-f]{40} dump.xml$', xml_commit_text.rstrip('\n').encode('ascii'), new, flags=re.MULTILINE)
+
+        new_commit_obj = check_output(['git', 'hash-object', '-t', 'commit', '-w', '--stdin'], input=new).decode('ascii').strip()
+        check_call(['git', 'update-ref', dst, new_commit_obj])
+        prev_commit = new_commit_obj
+
+        done += 1
+        if done % 10 == 1:
+            if objects_heap_size() > 2 * 1024**3:
+                objects_repack()
+        if time() - start > 1800:
+            break
+
+if __name__ == '__main__':
+    main()

@@ -8,7 +8,7 @@ import binascii
 import sqlite3
 from subprocess import Popen, run, PIPE
 
-from rkndex.const import RKN_EPOCH
+from rkndex.const import RKN_EPOCH, BRANCH_100
 
 class GitarLog(object):
     public_columns = frozenset(('update_time', 'update_time_urgently', 'signing_time',
@@ -22,13 +22,18 @@ class GitarLog(object):
         self.poll_fs()
 
     def poll_fs(self):
-        git_head = self.git_head()
+        git_head = self.git_rev_parse('HEAD')
+        git_100 = self.git_rev_parse(BRANCH_100)
         self.db.execute('BEGIN EXCLUSIVE TRANSACTION')
         with self.db:
-            db_head = self.db_head()
+            db_head = self.db_commit('head')
             if db_head != git_head:
                 self.insert_up_to(db_head, git_head)
-                self.update_db_head(git_head)
+                self.update_db_commit('head', git_head)
+            db_100 = self.db_commit('main100')
+            if db_100 != git_100:
+                self.insert_100_up_to(db_100, git_100)
+                self.update_db_commit('main100', git_100)
 
     def max_update_time(self):
         return next(self.db.execute('SELECT COALESCE(MAX(update_time), 0) FROM log'))[0]
@@ -96,16 +101,21 @@ class GitarLog(object):
 )''')
         self.db.execute('CREATE INDEX IF NOT EXISTS log_update_time ON log (update_time)')
         self.db.execute('CREATE UNIQUE INDEX IF NOT EXISTS log_xml_sha256 ON log (xml_sha256)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS main100 (commit_hash BLOB NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS log100 (signing_time INTEGER NOT NULL)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS log_signing_time ON log (signing_time)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS log100_signing_time ON log100 (signing_time)')
 
-    def update_db_head(self, head):
-        assert len(head) == 20
-        cursor = self.db.execute('UPDATE head SET commit_hash = ?', (head,))
+    def update_db_commit(self, table, head):
+        assert len(head) == 20 and table in ('head', 'main100')
+        cursor = self.db.execute('UPDATE {} SET commit_hash = ?'.format(table), (head,))
         assert 0 <= cursor.rowcount <= 1
         if cursor.rowcount == 0:
-            self.db.execute('INSERT INTO head VALUES(?)', (head,))
+            self.db.execute('INSERT INTO {} VALUES(?)'.format(table), (head,))
 
-    def db_head(self):
-        cursor = self.db.execute('SELECT commit_hash FROM head LIMIT 1')
+    def db_commit(self, table):
+        assert table in ('head', 'main100')
+        cursor = self.db.execute('SELECT commit_hash FROM {} LIMIT 1'.format(table))
         row = next(cursor, None)
         if row is not None:
             head = row[0]
@@ -114,8 +124,8 @@ class GitarLog(object):
             head = None
         return head
 
-    def git_head(self):
-        head = run(['git', '--git-dir', self.git_dir, 'rev-parse', 'HEAD'], stdout=PIPE, check=True).stdout
+    def git_rev_parse(self, rev):
+        head = run(['git', '--git-dir', self.git_dir, 'rev-parse', rev], stdout=PIPE, check=True).stdout
         head = binascii.unhexlify(head.strip().decode('ascii'))
         assert len(head) == 20
         return head
@@ -168,5 +178,18 @@ class GitarLog(object):
                     raise RuntimeError(a, b, c) # 'Bad line in git log' as well
             except Exception as exc:
                 raise RuntimeError('Bad line in git log', line, row, exc)
+        if proc.wait() != 0:
+            raise RuntimeError('git log failure', proc.returncode)
+
+    def insert_100_up_to(self, db_head, uptohead):
+        cmd = ['git', '--git-dir', self.git_dir, 'log', '--format=format:%at']
+        if db_head is not None:
+            cmd.append(binascii.hexlify(db_head) + b'..' + binascii.hexlify(uptohead))
+        else:
+            cmd.append(binascii.hexlify(uptohead))
+        proc = Popen(cmd, stdout=PIPE)
+        for line in proc.stdout:
+            signing_time = int(line.decode('ascii').strip())
+            self.db.execute('INSERT INTO log100 VALUES (?)', (signing_time,))
         if proc.wait() != 0:
             raise RuntimeError('git log failure', proc.returncode)

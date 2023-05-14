@@ -21,6 +21,7 @@ RUN set -ex \
         ca-certificates \
         git \
         libengine-gost-openssl1.1 \
+        openssh-client \
         openssl \
         python3-pip python3-setuptools python3-wheel \
         python3-requests \
@@ -32,9 +33,12 @@ RUN set -ex \
     && for f in '' 2 4 5 6 _gost2012; do openssl x509 -inform DER -outform PEM -in /tmp/ca_rtk${f}.crt >/opt/russian-certs/ca_rtk${f}.crt; done \
     && cp /tmp/ca_rtk3.crt /opt/russian-certs/ \
     && c_rehash /opt/russian-certs \
+    && mkdir -m 0700 /root/.ssh \
+    && ssh-keyscan github.com >>/etc/ssh/ssh_known_hosts \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/* /var/tmp/* \
     && :
 
 COPY rkndex /usr/local/lib/python3.6/dist-packages/rkndex
 COPY rkngitar /opt/rkngitar
+COPY ssh_config /root/.ssh/config
 ENTRYPOINT ["/opt/rkngitar"]
