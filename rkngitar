@@ -185,8 +185,8 @@ def git_cat_file(git_obj: bytes, stdout):
     return ScopedPopen(['git', 'cat-file', 'blob', binascii.hexlify(git_obj)], stdout=stdout)
 
 # Non-zero minutes TZ are not tested, so `:00` match is hard-coded
-UPDATE_TIME_RE = re.compile(br'\bupdateTime="(?P<raw>(?P<year>\d{4})-(?P<mon>\d\d)-(?P<day>\d\d)T(?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d)\+(?P<tzh>\d\d):00)"')
-UPDATE_TIME_URGENTLY_RE = re.compile(br'\bupdateTimeUrgently="(?P<raw>(?P<year>\d{4})-(?P<mon>\d\d)-(?P<day>\d\d)T(?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d)\+(?P<tzh>\d\d):00)"')
+UPDATE_TIME_RE = re.compile(br'\bupdateTime="(?P<raw>(?P<year>\d{4})-(?P<mon>\d\d)-(?P<day>\d\d)T(?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d)(\.\d\d\d)?\+(?P<tzh>\d\d):00)"')
+UPDATE_TIME_URGENTLY_RE = re.compile(br'\bupdateTimeUrgently="(?P<raw>(?P<year>\d{4})-(?P<mon>\d\d)-(?P<day>\d\d)T(?P<hour>\d\d):(?P<min>\d\d):(?P<sec>\d\d)(\.\d\d\d)?\+(?P<tzh>\d\d):00)"')
 
 def update_timegm(re_match):
     # NB regexps have + offset hardcoded
