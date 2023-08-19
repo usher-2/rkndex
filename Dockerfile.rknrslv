@@ -1,0 +1,18 @@
+FROM ubuntu:22.04
+
+RUN set -ex \
+    && sed -i s,http://archive.ubuntu.com/ubuntu/,mirror://mirrors.ubuntu.com/mirrors.txt, /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get -y --no-install-recommends install \
+        git \
+        openssh-client \
+        python3-pip python3-setuptools python3-wheel \
+    && pip3 install prometheus_client \
+    && mkdir -m 0700 /root/.ssh \
+    && ssh-keyscan github.com >>/etc/ssh/ssh_known_hosts \
+    && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/* /var/tmp/* \
+    && :
+
+COPY resolv-ar /opt/resolv-ar
+COPY ssh_config.resolv /root/.ssh/config
+ENTRYPOINT ["/opt/resolv-ar"]

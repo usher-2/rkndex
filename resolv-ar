@@ -5,16 +5,48 @@
 
 import argparse
 import datetime
+import glob
 import gzip
 import json
+import logging
 import os
 import re
+import time
+import sys
+import traceback
+import tempfile
+from contextlib import contextmanager
 from subprocess import check_call, check_output
+
+import prometheus_client as prom # https://github.com/prometheus/client_python
+
+RESOLV_LATENCY = prom.Summary('resolv_duration_seconds', 'Step latency', ['step'])
+RESOLV_EXCEPTIONS = prom.Counter('resolv_exceptions', 'Step exceptions', ['step'])
+RESOLV_UPDATETIME = prom.Gauge('resolv_update_time', 'DNS data timestamp')
+HEAP_BYTES = prom.Gauge('resolv_heap_bytes', 'Non-packed .git/objects/?? size')
+# TODO: MISORDERED_COMMITS = prom.Gauge('gitar_misordered_commits_count', 'Number of commits to reorder')
+for step in ('du', 'repack', 'store', 'github-push'):
+    RESOLV_LATENCY.labels(step)
+    RESOLV_EXCEPTIONS.labels(step)
+
+OPT = None # CLI options
+
+BRANCH = 'refs/heads/main'
+REMOTE = 'refs/remotes/gh/main'
+GH_REF = 'main'
 
 RVZ_EPOCH = 1506442860
 NAME = 'Eero Vitra'
 EMAIL = 'eero.virta@proton.me'
 NULL_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+
+# Decorator is not used as @H.labels('foo').time() bar is SyntaxError, see following:
+# - https://github.com/prometheus/client_python/issues/157
+# - https://mail.python.org/pipermail/python-dev/2004-August/046711.html
+@contextmanager
+def counted_step(step):
+    with RESOLV_LATENCY.labels(step).time(), RESOLV_EXCEPTIONS.labels(step).count_exceptions():
+        yield
 
 def git_init():
     if not os.path.exists(OPT.git_dir):
@@ -125,22 +157,91 @@ def existing_file(s):
     assert os.path.exists(s), s
     return s
 
+def existing_dir(s):
+    assert os.path.isdir(s), s
+    return s
+
 def parse_args():
     p = argparse.ArgumentParser(description='Import files to local git archive')
     p.add_argument('--git-dir', help='Git repo directory', metavar='DIR', required=True)
     p.add_argument('--objects-xmx', help='Git/objects max size to start git-repack', metavar='SIZE', type=git_size, default='5g')
     p.add_argument('--window-memory', help='Window size for git delta compression', metavar='SIZE', type=git_size, default='384m')
-    p.add_argument('files', nargs='+', type=existing_file, help='Files to add')
+    p.add_argument('--src', type=existing_dir, help='Directory to poll for *.gz')
+    p.add_argument('--dst-done', type=existing_file, help='List of processed files', metavar='FILE')
+    p.add_argument('--prom-addr', help='Prometheus exporter bind IP', metavar='IP', default='127.0.0.1')
+    p.add_argument('--prom-port', help='Prometheus exporter bind port', metavar='PORT', type=int)
     return p.parse_args()
+
+def objects_maybe_repack():
+    with counted_step('du'):
+        sz = objects_heap_size()
+        HEAP_BYTES.set(sz)
+    if OPT.objects_xmx < sz:
+        with counted_step('repack'):
+            objects_repack()
+
+def github_maybe_push():
+    local = check_output(['git', 'rev-parse', BRANCH]).strip().decode('ascii')
+    remote = check_output(['git', 'rev-parse', REMOTE]).strip().decode('ascii')
+    if local != remote:
+        with counted_step('github-push'):
+            check_call(['git', 'push', 'gh', '{}:{}'.format(BRANCH, GH_REF)])
+
+def git_done():
+    done = {
+        l
+        for l in check_output(['git', '--git-dir', OPT.git_dir, 'log', '--pretty=format:%s']).decode('ascii').split('\n')
+        if l.endswith('.gz') and RVZ_EPOCH <= int(l[:-3]) <= 9999999999# till Sat Nov 20 05:46:39 PM UTC 2286 sort() is the same for int and str :-)
+    }
+    return done
+
+@contextmanager
+def open_tmp_for_overwrite(fullpath, mode='wb'):
+    chmod = os.stat(fullpath).st_mode & 0o777
+    out_dir = os.path.dirname(fullpath)
+    with tempfile.NamedTemporaryFile(prefix='tmprvz', dir=out_dir, mode=mode) as fd:
+        yield fd
+        fd.flush()
+        # no exception happened
+        os.chmod(fd.name, chmod)
+        os.rename(fd.name, fullpath) # rename() overwrites existing file unlike link()
+        os.link(fullpath, fd.name) # to allow unlink(fd.name)
+
+def write_done(done):
+    if OPT.dst_done:
+        with open_tmp_for_overwrite(OPT.dst_done, mode='wb') as fd:
+            for f in sorted(done):
+                fd.write((f + '\n').encode('utf-8'))
 
 def main():
     global OPT
     OPT = parse_args()
+    logging.basicConfig(level=logging.INFO)
     git_init()
-    for fname in OPT.files:
-        commit_file(fname)
-        if OPT.objects_xmx < objects_heap_size():
-            objects_repack()
+    done = git_done()
+    if OPT.prom_port:
+        with counted_step('du'):
+            HEAP_BYTES.set(objects_heap_size())
+        prom.start_http_server(OPT.prom_port, OPT.prom_addr)
+        RESOLV_UPDATETIME.set(int(max(done)[:-3]))
+    while True:
+        try:
+            existing = sorted(glob.glob('*.gz', root_dir=OPT.src))
+            for fname in existing:
+                assert os.pathsep not in fname
+                if fname not in done:
+                    with counted_step('store'):
+                        commit_file(os.path.join(OPT.src, fname))
+                        done.add(fname)
+                        write_done(done)
+                        RESOLV_UPDATETIME.set(int(fname[:-3]))
+                        logging.info('commited %s', fname)
+                    objects_maybe_repack()
+            github_maybe_push()
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush() # docker makes stderr buffered
+        time.sleep(60)
 
 if __name__ == '__main__':
     main()

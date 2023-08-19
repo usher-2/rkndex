@@ -1,0 +1,5 @@
+Host github-resolves
+Hostname github.com
+User git
+IdentityFile /secret/id_ed25519.resolves
+IdentitiesOnly yes
