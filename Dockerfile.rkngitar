@@ -27,18 +27,15 @@ RUN set -ex \
         python3-requests \
         wget \
     && pip3 install prometheus_client \
-    && wget -O /tmp/gost-ca.tar.gz https://github.com/schors/gost-russian-ca/archive/67c5d515e8346772038a7be0e90429b3ad69ac84.tar.gz \
+    && wget -O /tmp/gost-ca.tar.gz https://github.com/schors/gost-russian-ca/archive/f7a5a4e6084363b052dbecb788d1e7b0626cc71a.tar.gz \
     && tar -x -C /tmp -f /tmp/gost-ca.tar.gz \
-    && mv /tmp/gost-russian-ca-67c5d515e8346772038a7be0e90429b3ad69ac84/certs /opt/russian-certs \
+    && mv /tmp/gost-russian-ca-????????????????????????????????????????/certs /opt/russian-certs \
     && for f in '' 2 4 5 6 _gost2012; do openssl x509 -inform DER -outform PEM -in /tmp/ca_rtk${f}.crt >/opt/russian-certs/ca_rtk${f}.crt; done \
     && cp /tmp/ca_rtk3.crt /opt/russian-certs/ \
     && c_rehash /opt/russian-certs \
     && mkdir -m 0700 /root/.ssh \
     && ssh-keyscan github.com >>/etc/ssh/ssh_known_hosts \
     && rm -rf /var/lib/apt/lists/* /root/.cache /tmp/* /var/tmp/* \
-    && :
-
-RUN set -ex \
     && if [ -d /usr/lib/x86_64-linux-gnu/engines-3 -a ! -e /usr/lib/x86_64-linux-gnu/engines-3/gost.so -a -f /gost.so ]; then ln -s /gost.so /usr/lib/x86_64-linux-gnu/engines-3/gost.so; fi \
     && :
 
